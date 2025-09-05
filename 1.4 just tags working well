@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AO3 Fic Labeler with Updated Colors & Collapse Rules
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      1.4
 // @description  AO3 fic tagger with color-coded tags, collapsing, toggle, and scroll-safe UI (Disliked is orange, Dropped collapses too)
 // @author       You
 // @match        https://archiveofourown.org/works*
