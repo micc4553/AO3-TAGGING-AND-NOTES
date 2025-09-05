@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AO3 Fic Labeler + Notes (visual restore)
 // @namespace    http://tampermonkey.net/
-// @version      3.2
-// @description  Tag AO3 works, collapse blurbs, highlight, and add styled notes.
+// @version      2.3.2
+// @description  Tag AO3 works, collapse blurbs, highlight, and add styled notes. some changes by me after to fix border and margins around usernotes box. 
 // @match        https://archiveofourown.org/works*
 // @match        https://archiveofourown.org/tags/*/works*
 // @match        https://archiveofourown.org/works/*
@@ -65,11 +65,11 @@
   function createNoteUI(id){
     const notes=loadNotes();const data=notes[id];
     const w=document.createElement('div');w.className='fic-note-wrapper';
-    w.style.margin='6px 0';w.style.padding='0';w.style.border='none';w.style.background='transparent';
+    w.style.margin='0px 0 8px 0';w.style.padding='0';w.style.border='none';w.style.background='transparent';
 
     const showAdd=()=>{
       w.innerHTML='';const b=document.createElement('button');
-      b.type='button';b.innerHTML='📝 Add Note';b.style.border='2px dashed #999';
+      b.type='button';b.innerHTML='📝 Add Note';b.style.border='1.5px dashed #999';
       b.style.background='transparent';b.style.cursor='pointer';b.style.width='100%';
       b.style.textAlign='center';b.style.padding='4px';b.style.fontSize='0.9em';b.style.borderRadius='8px';
       b.addEventListener('click',e=>{e.stopPropagation();showEdit('');});
@@ -144,4 +144,3 @@
 
   setupPage();
 })();
-
