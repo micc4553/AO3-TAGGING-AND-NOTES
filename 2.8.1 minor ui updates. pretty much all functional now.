@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AO3 Fic Labeler + Notes (v2.4 fixed)
 // @namespace    http://tampermonkey.net/
-// @version      2.4.1
+// @version      2.8.1
 // @description  Tag AO3 works, collapse blurbs, highlight, and add styled notes. Fixed to work on individual work pages.
 // @match        https://archiveofourown.org/works*
 // @match        https://archiveofourown.org/tags/*/works*
@@ -76,7 +76,7 @@
 
     const showAdd=()=>{
       w.innerHTML='';const b=document.createElement('button');
-      b.type='button';b.innerHTML=isAuthor ? '📝 Add Author Note' : '📝 Add Note';b.style.border='1.5px dashed #999';
+      b.type='button';b.innerHTML=isAuthor ? '📝 Add Author Note' : '📝 Add Story Note';b.style.border='1.5px dashed #999';
       b.style.background='transparent';b.style.cursor='pointer';b.style.display='inline-block';
       b.style.textAlign='center';b.style.padding='4px';b.style.fontSize='0.9em';b.style.borderRadius='4px';
       b.addEventListener('click',e=>{e.stopPropagation();showEdit('');});
@@ -87,7 +87,7 @@
       w.innerHTML='';
       const h=document.createElement('div');h.style.display='flex';h.style.justifyContent='space-between';
       h.style.alignItems='center';h.style.marginBottom='4px';
-      const l=document.createElement('div');l.innerHTML=isAuthor ? '<strong>📝 Your Author Note</strong>' : '<strong>📝 Your Note</strong>';
+      const l=document.createElement('div');l.innerHTML=isAuthor ? '<strong>📝 Your Author Note</strong>' : '<strong>📝 Your Story Note</strong>';
       const r=document.createElement('div');r.style.display='flex';r.style.gap='6px';
       const ts=document.createElement('span');ts.textContent=obj.date;ts.style.color='#777';ts.style.fontSize='0.85em';
       const ebtn=document.createElement('button');ebtn.textContent='✏️';ebtn.style.background='transparent';
