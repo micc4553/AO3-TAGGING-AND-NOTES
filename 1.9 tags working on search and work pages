@@ -1,0 +1,252 @@
+// ==UserScript==
+// @name         AO3 Fic Labeler with Collapse, Colors, No Extra Space
+// @namespace    http://tampermonkey.net/
+// @version      1.9
+// @description  Label AO3 fics, collapse blurbs, dim collapsed, color-coded tags, no ghost space when no tag
+// @author       You
+// @match        https://archiveofourown.org/works*
+// @match        https://archiveofourown.org/tags/*/works*
+// @match        https://archiveofourown.org/works/*
+// @icon         https://archiveofourown.org/favicon.ico
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const STORAGE_KEY = 'ao3_fic_labels';
+  const PRESET_TAGS = [
+    'Finished',
+    'To Read',
+    'Not Interested',
+    'Dropped',
+    'Disliked',
+    'Favourite',
+  ];
+  const COLLAPSE_TAGS = ['Finished', 'Not Interested', 'Disliked', 'Dropped'];
+
+  const TAG_COLORS = {
+    'Finished': { bg: '#800080', text: '#fff' }, // Purple
+    'To Read': { bg: '#228B22', text: '#fff' },  // Green
+    'Not Interested': { bg: '#808080', text: '#fff' }, // Grey
+    'Dropped': { bg: '#8B4513', text: '#fff' },  // Brown
+    'Disliked': { bg: '#FFA500', text: '#000' }, // Orange
+    'Favourite': { bg: '#FFC0CB', text: '#000' }, // Pink
+  };
+
+  function loadLabels() {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  }
+
+  function saveLabels(labels) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(labels));
+  }
+
+  function setLabelColor(span, label) {
+    if (!label || !TAG_COLORS[label]) return;
+    span.style.color = TAG_COLORS[label].bg;
+    span.style.fontWeight = 'bold';
+    span.style.marginRight = '0.3em';
+  }
+
+  function applyCollapse(work, shouldCollapse) {
+    const partsToHide = work.querySelectorAll(
+      '.tags, .summary, .stats, .fandoms, .header .heading + p, blockquote, .series'
+    );
+    partsToHide.forEach((el) => {
+      el.style.display = shouldCollapse ? 'none' : '';
+    });
+
+    const buttonContainer = work.querySelector('.fic-label-buttons');
+    if (buttonContainer) {
+      buttonContainer.style.marginTop = shouldCollapse ? '0.2em' : '0.5em';
+      buttonContainer.style.textAlign = 'right';
+    }
+
+    work.style.padding = shouldCollapse ? '4px 8px' : '';
+    work.style.borderBottom = shouldCollapse ? '1px solid #ddd' : '';
+    work.style.opacity = shouldCollapse ? '0.6' : '1.0';
+
+    work.dataset.collapsed = shouldCollapse ? 'true' : 'false';
+  }
+
+  function createButton(tag, workId, container, workElem, heading, labelSpanRef) {
+    const btn = document.createElement('button');
+    btn.textContent = tag;
+    btn.style.margin = '2px';
+    btn.style.padding = '2px 6px';
+    btn.style.fontSize = '0.8em';
+    btn.style.border = '1px solid #ccc';
+    btn.style.borderRadius = '4px';
+    btn.style.cursor = 'pointer';
+
+    const colors = TAG_COLORS[tag] || { bg: '#eee', text: '#000' };
+    btn.style.background = '#eee';
+    btn.style.color = '#000';
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const labels = loadLabels();
+      let currentLabel = labels[workId] || '';
+
+      if (currentLabel === tag) {
+        delete labels[workId];
+        currentLabel = '';
+
+        // Remove span entirely
+        if (labelSpanRef.span) {
+          labelSpanRef.span.remove();
+          labelSpanRef.span = null;
+        }
+      } else {
+        labels[workId] = tag;
+        currentLabel = tag;
+
+        // Create label span if missing
+        if (!labelSpanRef.span) {
+          const newSpan = document.createElement('span');
+          newSpan.classList.add('fic-label');
+          heading.insertBefore(newSpan, heading.firstChild);
+          labelSpanRef.span = newSpan;
+        }
+        labelSpanRef.span.textContent = `[${currentLabel}]`;
+        setLabelColor(labelSpanRef.span, currentLabel);
+      }
+
+      saveLabels(labels);
+      updateButtons(container, currentLabel);
+      applyCollapse(workElem, COLLAPSE_TAGS.includes(currentLabel));
+    });
+
+    return btn;
+  }
+
+  function updateButtons(container, activeTag) {
+    container.querySelectorAll('button').forEach((b) => {
+      const tag = b.textContent;
+      const colors = TAG_COLORS[tag] || { bg: '#eee', text: '#000' };
+      if (tag === activeTag) {
+        b.style.background = colors.bg;
+        b.style.color = colors.text;
+      } else {
+        b.style.background = '#eee';
+        b.style.color = '#000';
+      }
+    });
+  }
+
+  function addToWorkElement(workElem) {
+    const workIdMatch = workElem.id.match(/\d+/);
+    if (!workIdMatch) return;
+    const workId = workIdMatch[0];
+
+    const labels = loadLabels();
+    const currentLabel = labels[workId] || '';
+
+    const heading = workElem.querySelector('h4.heading');
+    if (!heading) return;
+
+    const labelSpanRef = { span: null };
+    if (currentLabel) {
+      const span = document.createElement('span');
+      span.classList.add('fic-label');
+      span.textContent = `[${currentLabel}]`;
+      setLabelColor(span, currentLabel);
+
+      // Trim whitespace before title
+      if (heading.firstChild && heading.firstChild.nodeType === Node.TEXT_NODE) {
+        heading.firstChild.textContent = heading.firstChild.textContent.trimStart();
+      }
+
+      heading.insertBefore(span, heading.firstChild);
+      labelSpanRef.span = span;
+    }
+
+    const container = document.createElement('div');
+    container.classList.add('fic-label-buttons');
+    container.style.marginTop = '0.5em';
+    container.style.fontSize = '0.9em';
+    container.style.textAlign = 'right';
+
+    PRESET_TAGS.forEach((tag) => {
+      const btn = createButton(tag, workId, container, workElem, heading, labelSpanRef);
+      container.appendChild(btn);
+    });
+
+    workElem.appendChild(container);
+
+    updateButtons(container, currentLabel);
+    applyCollapse(workElem, COLLAPSE_TAGS.includes(currentLabel));
+
+    workElem.addEventListener('click', (e) => {
+      if (e.target.closest('button') || e.target.closest('a')) return;
+      const scrollPos = window.scrollY;
+      const isCollapsed = workElem.dataset.collapsed === 'true';
+      applyCollapse(workElem, !isCollapsed);
+      window.scrollTo({ top: scrollPos });
+    });
+  }
+
+  function processSearchResults() {
+    document.querySelectorAll('li.work').forEach(addToWorkElement);
+  }
+
+  function addToWorkPage() {
+    const workElem = document.querySelector('div.work');
+    if (!workElem) return;
+
+    const workIdMatch = window.location.pathname.match(/works\/(\d+)/);
+    if (!workIdMatch) return;
+    const workId = workIdMatch[1];
+
+    const labels = loadLabels();
+    const currentLabel = labels[workId] || '';
+
+    const heading = workElem.querySelector('h2.title');
+    if (!heading) return;
+
+    const labelSpanRef = { span: null };
+
+    // Top buttons
+    const topContainer = document.createElement('div');
+    topContainer.classList.add('fic-label-buttons');
+    topContainer.style.marginTop = '0.5em';
+    topContainer.style.fontSize = '0.9em';
+    topContainer.style.textAlign = 'right';
+
+    PRESET_TAGS.forEach((tag) => {
+      const btn = createButton(tag, workId, topContainer, workElem, heading, labelSpanRef);
+      topContainer.appendChild(btn);
+    });
+
+    heading.parentNode.insertBefore(topContainer, heading.nextSibling);
+    updateButtons(topContainer, currentLabel);
+
+    // Bottom buttons
+    const bottomRef = document.querySelector('#kudos');
+    if (bottomRef) {
+      const bottomContainer = topContainer.cloneNode(false);
+      bottomContainer.classList.add('fic-label-buttons');
+      bottomContainer.style.marginTop = '0.5em';
+      bottomContainer.style.textAlign = 'right';
+
+      PRESET_TAGS.forEach((tag) => {
+        const btn = createButton(tag, workId, bottomContainer, workElem, heading, labelSpanRef);
+        bottomContainer.appendChild(btn);
+      });
+
+      bottomRef.parentNode.insertBefore(bottomContainer, bottomRef);
+      updateButtons(bottomContainer, currentLabel);
+    }
+  }
+
+  function init() {
+    if (document.querySelector('li.work')) {
+      processSearchResults();
+    } else {
+      addToWorkPage();
+    }
+  }
+
+  init();
+})();
