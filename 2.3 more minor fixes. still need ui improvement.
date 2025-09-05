@@ -3,7 +3,7 @@
 // @name         AO3 Fic Labeler + Notes (v3.3.1 fix escapes)
 // @namespace    http://tampermonkey.net/
 // @version      3.3.1
-// @description  Labels, collapse, borders, and styled notes with smaller Add Note; fixed regex escapes
+// @description  Labels, collapse, borders, and styled notes with smaller Add Note; fixed regex escapes. LAST ONE WITH WORKING TAGS AND NOTE ON WORKS PAGE. 
 // @match        https://archiveofourown.org/works*
 // @match        https://archiveofourown.org/tags/*/works*
 // @match        https://archiveofourown.org/works/*
