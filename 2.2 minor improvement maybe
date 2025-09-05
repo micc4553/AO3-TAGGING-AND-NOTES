@@ -1,0 +1,310 @@
+
+// ==UserScript==
+// @name         AO3 Fic Labeler + Notes (restored visuals, full features)
+// @namespace    http://tampermonkey.net/
+// @version      3.2
+// @description  AO3 fic labeling with tags, collapse logic, border highlights, and styled personal notes
+// @match        https://archiveofourown.org/works*
+// @match        https://archiveofourown.org/tags/*/works*
+// @match        https://archiveofourown.org/works/*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const STORAGE_KEY = 'ao3_fic_labels';
+  const NOTES_KEY = 'ao3_fic_notes';
+  const PRESET_TAGS = ['Finished', 'To Read', 'Not Interested', 'Dropped', 'Disliked', 'Favourite'];
+  const COLLAPSE_TAGS = ['Finished', 'Not Interested', 'Disliked', 'Dropped'];
+  const BORDER_TAGS = ['To Read', 'Favourite'];
+
+  const TAG_COLORS = {
+    'Finished': { bg: '#800080', text: '#fff' },
+    'To Read': { bg: '#228B22', text: '#fff' },
+    'Not Interested': { bg: '#808080', text: '#fff' },
+    'Dropped': { bg: '#8B4513', text: '#fff' },
+    'Disliked': { bg: '#FFA500', text: '#000' },
+    'Favourite': { bg: '#FFC0CB', text: '#000' }
+  };
+
+  const loadJSON = (k, f = {}) => {
+    try { return JSON.parse(localStorage.getItem(k) || JSON.stringify(f)); } catch { return f; }
+  };
+  const saveJSON = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+
+  const loadLabels = () => loadJSON(STORAGE_KEY, {});
+  const saveLabels = (labels) => saveJSON(STORAGE_KEY, labels);
+  const loadNotes = () => loadJSON(NOTES_KEY, {});
+  const saveNotes = (notes) => saveJSON(NOTES_KEY, notes);
+
+  const formatDateTime = (d = new Date()) => d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
+
+  function setLabelColor(span, label) {
+    const c = TAG_COLORS[label];
+    if (!c) return;
+    span.style.color = c.bg;
+    span.style.fontWeight = 'bold';
+    span.style.marginRight = '0.35em';
+  }
+
+  function applyBorderHighlight(work, label) {
+    work.style.border = '';
+    work.style.boxShadow = '';
+    work.style.borderRadius = '';
+    if (BORDER_TAGS.includes(label)) {
+      const color = TAG_COLORS[label].bg;
+      work.style.border = `2px solid ${color}`;
+      work.style.boxShadow = `0 0 8px 2px ${color}55`;
+      work.style.borderRadius = '6px';
+    }
+  }
+
+  function applyCollapse(work, collapse) {
+    const hide = work.querySelectorAll(
+      '.tags, .summary, .stats, .fandoms, .header .heading + p, blockquote, .series, .collections'
+    );
+    hide.forEach(e => e.style.display = collapse ? 'none' : '');
+    const btnRow = work.querySelector(':scope > .fic-label-buttons');
+    if (btnRow) btnRow.style.marginTop = collapse ? '0.2em' : '0.5em';
+    work.style.opacity = collapse ? '0.6' : '1.0';
+    work.dataset.collapsed = collapse ? 'true' : 'false';
+  }
+
+  function makeButtonRow(c) {
+    c.style.display = 'flex';
+    c.style.flexWrap = 'wrap';
+    c.style.justifyContent = 'flex-end';
+    c.style.gap = '4px';
+    c.style.width = '100%';
+    c.style.clear = 'both';
+    c.style.marginTop = '0.5em';
+    c.style.fontSize = '0.9em';
+  }
+
+  function createNoteUI(workId) {
+    const notes = loadNotes();
+    const noteData = notes[workId] || null;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'fic-note-wrapper';
+    wrapper.style.margin = '0.5em 0';
+    wrapper.style.padding = '10px';
+    wrapper.style.border = '1px solid #d0d0d0';
+    wrapper.style.borderRadius = '8px';
+    wrapper.style.background = '#fafafa';
+    wrapper.style.boxShadow = 'inset 0 1px 0 #eee';
+
+    const renderAdd = () => {
+      wrapper.innerHTML = '';
+      const btn = document.createElement('button');
+      btn.textContent = '📝 Add Note';
+      btn.style.border = '2px dashed #999';
+      btn.style.padding = '6px 12px';
+      btn.style.borderRadius = '8px';
+      btn.style.background = 'transparent';
+      btn.style.cursor = 'pointer';
+      btn.style.fontSize = '1em';
+      btn.style.display = 'block';
+      btn.style.margin = '0 auto';
+      btn.addEventListener('click', e => { e.stopPropagation(); renderEdit(''); });
+      wrapper.appendChild(btn);
+    };
+
+    const renderView = obj => {
+      wrapper.innerHTML = '';
+      const head = document.createElement('div');
+      head.style.display = 'flex';
+      head.style.justifyContent = 'space-between';
+      head.style.marginBottom = '6px';
+
+      const left = document.createElement('div');
+      left.innerHTML = '<strong>📝 Your Note</strong>';
+      const right = document.createElement('div');
+      right.style.display = 'flex';
+      right.style.gap = '8px';
+
+      const ts = document.createElement('span');
+      ts.textContent = obj.date;
+      ts.style.fontSize = '0.85em';
+      ts.style.color = '#777';
+
+      const ebtn = document.createElement('button');
+      ebtn.textContent = '✏️';
+      ebtn.style.background = 'transparent';
+      ebtn.style.border = 'none';
+      ebtn.style.cursor = 'pointer';
+      ebtn.addEventListener('click', e => { e.stopPropagation(); renderEdit(obj.text); });
+
+      const dbtn = document.createElement('button');
+      dbtn.textContent = '🗑️';
+      dbtn.style.background = 'transparent';
+      dbtn.style.border = 'none';
+      dbtn.style.cursor = 'pointer';
+      dbtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const n = loadNotes(); delete n[workId]; saveNotes(n);
+        renderAdd();
+      });
+
+      right.append(ts, ebtn, dbtn);
+      head.append(left, right);
+      wrapper.append(head);
+
+      const body = document.createElement('div');
+      body.textContent = obj.text;
+      body.style.padding = '4px';
+      wrapper.append(body);
+    };
+
+    const renderEdit = text => {
+      wrapper.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.placeholder = 'Write your note...';
+      ta.style.width = '100%';
+      ta.style.minHeight = '100px';
+      ta.style.padding = '10px';
+      wrapper.append(ta);
+
+      const actions = document.createElement('div');
+      actions.style.textAlign = 'right';
+      actions.style.marginTop = '6px';
+
+      const save = document.createElement('button');
+      save.textContent = '💾 Save';
+      save.style.marginRight = '6px';
+      save.addEventListener('click', e => {
+        e.stopPropagation();
+        const val = ta.value.trim();
+        if (!val) return renderAdd();
+        const n = loadNotes();
+        n[workId] = { text: val, date: formatDateTime() };
+        saveNotes(n);
+        renderView(n[workId]);
+      });
+
+      const cancel = document.createElement('button');
+      cancel.textContent = '❌ Cancel';
+      cancel.addEventListener('click', e => {
+        e.stopPropagation();
+        const n = loadNotes();
+        if (n[workId]) renderView(n[workId]); else renderAdd();
+      });
+
+      actions.append(save, cancel);
+      wrapper.append(actions);
+    };
+
+    if (noteData) renderView(noteData); else renderAdd();
+    return wrapper;
+  }
+
+  function updateButtons(c, active) {
+    c.querySelectorAll('button.fic-tag-btn').forEach(b => {
+      const tag = b.dataset.tag;
+      const col = TAG_COLORS[tag] || { bg: '#eee', text: '#000' };
+      if (tag === active) {
+        b.style.background = col.bg; b.style.color = col.text;
+      } else {
+        b.style.background = '#eee'; b.style.color = '#000';
+      }
+    });
+  }
+
+  function createButton(tag, workId, container, workElem, heading, spanRef, showInHeading) {
+    const b = document.createElement('button');
+    b.className = 'fic-tag-btn'; b.dataset.tag = tag; b.textContent = tag;
+    b.style.padding = '2px 6px'; b.style.fontSize = '0.8em';
+    b.style.border = '1px solid #ccc'; b.style.borderRadius = '4px';
+    b.style.cursor = 'pointer'; b.style.flex = '0 0 auto';
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const l = loadLabels(); let cur = l[workId] || '';
+      if (cur === tag) { delete l[workId]; cur = ''; if (spanRef.span) { spanRef.span.remove(); spanRef.span = null; } }
+      else { l[workId] = tag; cur = tag;
+        if (showInHeading) {
+          if (!spanRef.span) {
+            const s = document.createElement('span');
+            s.className = 'fic-label'; heading.insertBefore(s, heading.firstChild);
+            spanRef.span = s;
+          }
+          spanRef.span.textContent = `[${cur}]`; setLabelColor(spanRef.span, cur);
+        }
+      }
+      saveLabels(l); updateButtons(container, cur);
+      applyCollapse(workElem, COLLAPSE_TAGS.includes(cur));
+      applyBorderHighlight(workElem, cur);
+    });
+    return b;
+  }
+
+  function setupSearchWork(work) {
+    if (work.dataset.processed) return; work.dataset.processed = 'true';
+    const id = work.id.match(/\d+/); if (!id) return;
+    const workId = id[0], labels = loadLabels(), cur = labels[workId] || '';
+    const h = work.querySelector('h4.heading'); if (!h) return;
+
+    const spanRef = { span: null };
+    if (cur) { const s = document.createElement('span'); s.textContent = `[${cur}]`; setLabelColor(s, cur); h.insertBefore(s, h.firstChild); spanRef.span = s; }
+
+    const notes = createNoteUI(workId);
+    const tags = work.querySelector('.tags');
+    if (tags) tags.parentNode.insertBefore(notes, tags);
+
+    let row = document.createElement('div'); row.className = 'fic-label-buttons'; makeButtonRow(row);
+    PRESET_TAGS.forEach(t => row.append(createButton(t, workId, row, work, h, spanRef, true)));
+    work.append(row); updateButtons(row, cur);
+
+    applyCollapse(work, COLLAPSE_TAGS.includes(cur));
+    applyBorderHighlight(work, cur);
+
+    work.addEventListener('click', e => {
+      if (e.target.closest('a,button,.fic-note-wrapper')) return;
+      const curLab = loadLabels()[workId] || '';
+      if (!COLLAPSE_TAGS.includes(curLab)) return;
+      const collapsed = work.dataset.collapsed === 'true'; applyCollapse(work, !collapsed);
+    });
+  }
+
+  function processSearch() { document.querySelectorAll('li.work').forEach(setupSearchWork); }
+
+  function setupWorkPage() {
+    const work = document.querySelector('div.work'); if (!work || work.dataset.processed) return; work.dataset.processed = 'true';
+    const id = location.pathname.match(/works\/(\d+)/); if (!id) return; const workId = id[1];
+    const labels = loadLabels(), cur = labels[workId] || ''; const title = document.querySelector('h2.title');
+
+    const notes = createNoteUI(workId); const tags = work.querySelector('.tags');
+    if (tags) tags.parentNode.insertBefore(notes, tags); else title.parentNode.insertBefore(notes, title.nextSibling);
+
+    let top = document.createElement('div'); top.className = 'fic-label-buttons'; makeButtonRow(top);
+    PRESET_TAGS.forEach(t => top.append(createButton(t, workId, top, work, title, {span:null}, false)));
+    title.parentNode.insertBefore(top, title.nextSibling); updateButtons(top, cur);
+
+    const kudos = document.querySelector('#kudos'); if (kudos) {
+      let bot = document.createElement('div'); bot.className = 'fic-label-buttons'; makeButtonRow(bot);
+      PRESET_TAGS.forEach(t => bot.append(createButton(t, workId, bot, work, title, {span:null}, false)));
+      kudos.parentNode.insertBefore(bot, kudos); updateButtons(bot, cur);
+    }
+    applyBorderHighlight(work, cur);
+  }
+
+  function init() {
+    if (document.querySelector('li.work')) processSearch(); else setupWorkPage();
+    const root = document.querySelector('#main') || document.body;
+    new MutationObserver(m => {
+      for (const x of m) for (const n of x.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.matches?.('li.work')) setupSearchWork(n);
+        n.querySelectorAll?.('li.work').forEach(setupSearchWork);
+        if (n.matches?.('div.work')) setupWorkPage();
+      }
+    }).observe(root, {childList:true,subtree:true});
+  }
+
+  init();
+})();
+
