@@ -1,0 +1,180 @@
+// ==UserScript==
+// @name         AO3 Fic Labeler with Updated Colors & Collapse Rules
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  AO3 fic tagger with color-coded tags, collapsing, toggle, and scroll-safe UI (Disliked is orange, Dropped collapses too)
+// @author       You
+// @match        https://archiveofourown.org/works*
+// @match        https://archiveofourown.org/tags/*/works*
+// @icon         https://archiveofourown.org/favicon.ico
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const STORAGE_KEY = 'ao3_fic_labels';
+  const PRESET_TAGS = [
+    'Finished',
+    'To Read',
+    'Not Interested',
+    'Dropped',
+    'Disliked',
+    'Favourite',
+  ];
+
+  // 🔹 Now Dropped also collapses
+  const COLLAPSE_TAGS = ['Finished', 'Not Interested', 'Disliked', 'Dropped'];
+
+  // 🎨 Updated colors (Disliked is now orange)
+  const TAG_COLORS = {
+    'Finished': { bg: '#a64ca6', text: '#a64ca6' },      // Purple
+    'To Read': { bg: '#4caf50', text: '#4caf50' },        // Green
+    'Not Interested': { bg: '#9e9e9e', text: '#9e9e9e' }, // Grey
+    'Dropped': { bg: '#8b4513', text: '#8b4513' },        // Brown
+    'Disliked': { bg: '#ff9800', text: '#ff9800' },       // Orange
+    'Favourite': { bg: '#e91e63', text: '#e91e63' },      // Pink
+  };
+
+  function loadLabels() {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  }
+
+  function saveLabels(labels) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(labels));
+  }
+
+  function collapseWork(work, shouldCollapse) {
+    const partsToHide = work.querySelectorAll(
+      '.tags, .summary, .stats, .fandoms, .header .heading + p, blockquote, .series'
+    );
+    partsToHide.forEach((el) => {
+      el.style.display = shouldCollapse ? 'none' : '';
+    });
+
+    const buttonContainer = work.querySelector('.fic-label-buttons');
+    if (buttonContainer) {
+      buttonContainer.style.marginTop = shouldCollapse ? '0.2em' : '0.5em';
+      buttonContainer.style.textAlign = 'right';
+    }
+
+    work.style.padding = shouldCollapse ? '4px 8px' : '';
+    work.style.borderBottom = shouldCollapse ? '1px solid #ddd' : '';
+    work.style.opacity = shouldCollapse ? '0.6' : '1.0';
+
+    work.dataset.collapsed = shouldCollapse ? 'true' : 'false';
+  }
+
+  function setLabelColor(labelSpan, tag) {
+    const color = TAG_COLORS[tag];
+    if (color) {
+      labelSpan.style.color = color.text;
+    } else {
+      labelSpan.style.color = '#d00'; // Default red
+    }
+  }
+
+  function createButton(tag, workId, labelSpan, container, work) {
+    const labels = loadLabels();
+    let currentLabel = labels[workId] || '';
+
+    const btn = document.createElement('button');
+    btn.textContent = tag;
+    btn.style.margin = '2px';
+    btn.style.padding = '2px 6px';
+    btn.style.fontSize = '0.8em';
+    btn.style.border = '1px solid #ccc';
+    btn.style.borderRadius = '4px';
+    btn.style.cursor = 'pointer';
+    btn.style.background = currentLabel === tag ? TAG_COLORS[tag]?.bg || '#d00' : '#eee';
+    btn.style.color = currentLabel === tag ? '#fff' : '#000';
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const labels = loadLabels();
+      if (labels[workId] === tag) {
+        delete labels[workId];
+        currentLabel = '';
+      } else {
+        labels[workId] = tag;
+        currentLabel = tag;
+      }
+      saveLabels(labels);
+
+      labelSpan.textContent = currentLabel ? `[${currentLabel}]` : '';
+      setLabelColor(labelSpan, currentLabel);
+      updateButtons(container, currentLabel);
+
+      collapseWork(work, COLLAPSE_TAGS.includes(currentLabel));
+    });
+
+    return btn;
+  }
+
+  function updateButtons(container, activeTag) {
+    container.querySelectorAll('button').forEach((b) => {
+      const tag = b.textContent;
+      if (tag === activeTag) {
+        b.style.background = TAG_COLORS[tag]?.bg || '#d00';
+        b.style.color = '#fff';
+      } else {
+        b.style.background = '#eee';
+        b.style.color = '#000';
+      }
+    });
+  }
+
+  function addLabelUI(work) {
+    const workIdMatch = work.id.match(/\d+/);
+    if (!workIdMatch) return;
+    const workId = workIdMatch[0];
+
+    const labels = loadLabels();
+    let currentLabel = labels[workId] || '';
+
+    // Label text before fic title
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = currentLabel ? `[${currentLabel}]` : '';
+    labelSpan.style.fontWeight = 'bold';
+    labelSpan.style.marginRight = '0.5em';
+    setLabelColor(labelSpan, currentLabel);
+    labelSpan.classList.add('fic-label');
+
+    const heading = work.querySelector('h4.heading');
+    if (!heading || heading.querySelector('.fic-label')) return;
+    heading.insertBefore(labelSpan, heading.firstChild);
+
+    // Container for buttons
+    const container = document.createElement('div');
+    container.classList.add('fic-label-buttons');
+    container.style.marginTop = '0.5em';
+    container.style.fontSize = '0.9em';
+    container.style.textAlign = 'right';
+
+    PRESET_TAGS.forEach((tag) => {
+      const btn = createButton(tag, workId, labelSpan, container, work);
+      container.appendChild(btn);
+    });
+
+    work.appendChild(container);
+
+    // Collapse if tag is already set
+    collapseWork(work, COLLAPSE_TAGS.includes(currentLabel));
+
+    // Toggle collapse on click anywhere in the work element
+    work.addEventListener('click', (e) => {
+      if (e.target.closest('button') || e.target.closest('a')) return;
+
+      const scrollPos = window.scrollY;
+      const isCollapsed = work.dataset.collapsed === 'true';
+      collapseWork(work, !isCollapsed);
+      window.scrollTo({ top: scrollPos });
+    });
+  }
+
+  function processPage() {
+    document.querySelectorAll('li.work').forEach(addLabelUI);
+  }
+
+  processPage();
+})();
