@@ -1,0 +1,218 @@
+// ==UserScript==
+// @name         AO3 Fic Labeler + Notes (v2.4 fixed)
+// @namespace    http://tampermonkey.net/
+// @version      2.4.1
+// @description  Tag AO3 works, collapse blurbs, highlight, and add styled notes. Fixed to work on individual work pages.
+// @match        https://archiveofourown.org/works*
+// @match        https://archiveofourown.org/tags/*/works*
+// @match        https://archiveofourown.org/works/*
+// @icon         https://archiveofourown.org/favicon.ico
+// @grant        none
+// ==/UserScript==
+
+(function() {
+  'use strict';
+  const STORAGE_KEY = 'ao3_fic_labels';
+  const NOTES_KEY = 'ao3_fic_notes';
+  const PRESET_TAGS = ['Finished', 'To Read', 'Not Interested', 'Dropped', 'Disliked', 'Favourite'];
+  const COLLAPSE_TAGS = ['Finished', 'Not Interested', 'Dropped', 'Disliked'];
+  const BORDER_TAGS = ['To Read', 'Favourite'];
+  const TAG_COLORS = {
+    'Finished': { bg: '#800080', text: '#fff' },
+    'To Read': { bg: '#228B22', text: '#fff' },
+    'Not Interested': { bg: '#808080', text: '#fff' },
+    'Dropped': { bg: '#8B4513', text: '#fff' },
+    'Disliked': { bg: '#FFA500', text: '#000' },
+    'Favourite': { bg: '#FFC0CB', text: '#000' }
+  };
+
+  const loadJSON = (k,f={})=>{try{return JSON.parse(localStorage.getItem(k)||JSON.stringify(f));}catch{return f;}};
+  const saveJSON = (k,v)=>localStorage.setItem(k,JSON.stringify(v));
+
+  const loadLabels = ()=>loadJSON(STORAGE_KEY,{});
+  const saveLabels = v=>saveJSON(STORAGE_KEY,v);
+  const loadNotes = ()=>loadJSON(NOTES_KEY,{});
+  const saveNotes = v=>saveJSON(NOTES_KEY,v);
+  const formatDateTime = d=>d.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  function makeButtonRow(c){
+    c.style.display='flex';c.style.flexWrap='wrap';c.style.justifyContent='flex-end';
+    c.style.gap='2px';c.style.width='100%';c.style.clear='both';c.style.marginTop='0.5em';
+  }
+
+  function setLabelColor(el,tag){
+    const c=TAG_COLORS[tag];if(!c)return;
+    el.style.color=c.bg;el.style.fontWeight='bold';el.style.marginRight='0.35em';
+  }
+
+  function applyBorderHighlight(work,tag){
+    work.style.border='';work.style.boxShadow='';work.style.borderRadius='';
+    if(BORDER_TAGS.includes(tag)){
+      const color=TAG_COLORS[tag]?.bg||'#000';
+      work.style.border=`2px solid ${color}`;
+      work.style.boxShadow=`0 0 8px 2px ${color}55`;
+      work.style.borderRadius='6px';
+    }
+  }
+
+  function applyCollapse(work,collapse){
+    const hide=work.querySelectorAll('.tags,.summary,.stats,.fandoms,blockquote,.series,.collections');
+    hide.forEach(el=>el.style.display=collapse?'none':'');
+    work.style.opacity=collapse?'0.6':'1.0';
+    work.dataset.collapsed=collapse?'true':'false';
+  }
+
+  function createNoteUI(id){
+    const notes=loadNotes();const data=notes[id];
+    const w=document.createElement('div');w.className='fic-note-wrapper';
+    w.style.margin='0px 0 8px 0';w.style.padding='0';w.style.border='none';w.style.background='transparent';w.style.textAlign='center';
+
+    const showAdd=()=>{
+      w.innerHTML='';const b=document.createElement('button');
+      b.type='button';b.innerHTML='📝 Add Note';b.style.border='1.5px dashed #999';
+      b.style.background='transparent';b.style.cursor='pointer';b.style.display='inline-block';
+      b.style.textAlign='center';b.style.padding='4px';b.style.fontSize='0.9em';b.style.borderRadius='4px';
+      b.addEventListener('click',e=>{e.stopPropagation();showEdit('');});
+      w.appendChild(b);
+    };
+
+    const showView=(obj)=>{
+      w.innerHTML='';
+      const h=document.createElement('div');h.style.display='flex';h.style.justifyContent='space-between';
+      h.style.alignItems='center';h.style.marginBottom='4px';
+      const l=document.createElement('div');l.innerHTML='<strong>📝 Your Note</strong>';
+      const r=document.createElement('div');r.style.display='flex';r.style.gap='6px';
+      const ts=document.createElement('span');ts.textContent=obj.date;ts.style.color='#777';ts.style.fontSize='0.85em';
+      const ebtn=document.createElement('button');ebtn.textContent='✏️';ebtn.style.background='transparent';
+      ebtn.style.border='none';ebtn.style.cursor='pointer';ebtn.addEventListener('click',e=>{e.stopPropagation();showEdit(obj.text);});
+      const dbtn=document.createElement('button');dbtn.textContent='🗑️';dbtn.style.background='transparent';
+      dbtn.style.border='none';dbtn.style.cursor='pointer';dbtn.addEventListener('click',e=>{e.stopPropagation();const n=loadNotes();delete n[id];saveNotes(n);showAdd();});
+      r.append(ts,ebtn,dbtn);h.append(l,r);w.appendChild(h);
+      const c=document.createElement('div');c.textContent=obj.text;c.style.whiteSpace='pre-wrap';w.appendChild(c);
+    };
+
+    const showEdit=(text)=>{
+      w.innerHTML='';
+      const ta=document.createElement('textarea');ta.value=text;
+      ta.style.width='100%';ta.style.maxWidth='70%';ta.style.minHeight='80px';
+      ta.style.border='1px solid #ccc';ta.style.borderRadius='6px';ta.style.padding='6px';w.appendChild(ta);
+      const row=document.createElement('div');row.style.textAlign='right';
+      row.style.width='85%';row.style.marginTop='4px';
+      const save=document.createElement('button');save.textContent='💾 Save';save.style.marginRight='6px';
+      save.addEventListener('click',e=>{e.stopPropagation();const v=ta.value.trim();if(!v){showAdd();return;}const n=loadNotes();n[id]={text:v,date:formatDateTime(new Date())};saveNotes(n);showView(n[id]);});
+      const cancel=document.createElement('button');cancel.textContent='❌ Cancel';
+      cancel.addEventListener('click',e=>{e.stopPropagation();const n=loadNotes();if(n[id])showView(n[id]);else showAdd();});
+      row.append(save,cancel);w.appendChild(row);
+    };
+
+    if(data)showView(data);else showAdd();
+    return w;
+  }
+
+  function createTagButton(tag,id,c,work,h,ref,showLabel,isSearchResult=true){
+    const b=document.createElement('button');b.className='fic-tag-btn';b.dataset.tag=tag;b.textContent=tag;
+    b.style.fontSize='0.8em';b.style.padding='2px 6px';b.style.border='1px solid #ccc';b.style.borderRadius='4px';b.style.margin='1px';
+    b.addEventListener('click',e=>{
+      e.stopPropagation();const labels=loadLabels();let cur=labels[id]||'';
+      if(cur===tag){delete labels[id];cur='';if(ref.span){ref.span.remove();ref.span=null;}}
+      else{labels[id]=tag;cur=tag;if(showLabel){if(!ref.span){const s=document.createElement('span');s.className='fic-label';h.insertBefore(s,h.firstChild);ref.span=s;}ref.span.textContent=`[${cur}]`;setLabelColor(ref.span,cur);}}
+      saveLabels(labels);updateButtons(c,cur);
+      
+      // Only apply visual effects on search result pages
+      if(isSearchResult){
+        applyCollapse(work,COLLAPSE_TAGS.includes(cur));
+        applyBorderHighlight(work,cur);
+      }
+    });return b;
+  }
+
+  function updateButtons(c,cur){c.querySelectorAll('button.fic-tag-btn').forEach(b=>{
+    const tag=b.dataset.tag;const colors=TAG_COLORS[tag]||{bg:'#eee',text:'#000'};
+    if(tag===cur){b.style.background=colors.bg;b.style.color=colors.text;b.style.borderColor=colors.bg;}
+    else{b.style.background='#eee';b.style.color='#000';b.style.borderColor='#ccc';}
+  });}
+
+  // Function for search results (li.work elements)
+  function setupWork(work){
+    if(work.dataset.proc)return;work.dataset.proc='1';
+    const id=(work.id.match(/\d+/)||[])[0];if(!id)return;
+    const labels=loadLabels();const cur=labels[id]||'';
+    const heading=work.querySelector('h4.heading');if(!heading)return;
+    const ref={span:null};if(cur){const s=document.createElement('span');s.className='fic-label';s.textContent=`[${cur}]`;setLabelColor(s,cur);heading.insertBefore(s,heading.firstChild);ref.span=s;}
+    const note=createNoteUI(id);const tags=work.querySelector('.tags');if(tags)tags.parentNode.insertBefore(note,tags);else heading.parentNode.insertBefore(note,heading.nextSibling);
+    let c=work.querySelector(':scope > .fic-label-buttons');if(!c){c=document.createElement('div');c.className='fic-label-buttons';makeButtonRow(c);PRESET_TAGS.forEach(t=>c.appendChild(createTagButton(t,id,c,work,heading,ref,true,true)));work.appendChild(c);}updateButtons(c,cur);
+    applyCollapse(work,COLLAPSE_TAGS.includes(cur));applyBorderHighlight(work,cur);
+    if(!work._bound){work.addEventListener('click',e=>{if(e.target.closest('a,button,.fic-note-wrapper'))return;const l=loadLabels()[id]||'';if(!COLLAPSE_TAGS.includes(l))return;applyCollapse(work,work.dataset.collapsed!=='true');});work._bound=1;}
+  }
+
+  // Function for individual work pages (div.work elements)
+  function setupWorkPage(){
+    const workElem=document.querySelector('div.work');
+    if(!workElem||workElem.dataset.processed)return;
+    workElem.dataset.processed='true';
+
+    const idMatch=location.pathname.match(/works\/(\d+)/);
+    if(!idMatch)return;
+    const workId=idMatch[1];
+
+    const labels=loadLabels();
+    const currentLabel=labels[workId]||'';
+
+    const titleHeading=document.querySelector('h2.title');
+    if(!titleHeading)return;
+
+    const notesWrapper=createNoteUI(workId);
+    const tagsBlock=workElem.querySelector('.tags');
+    if(tagsBlock)tagsBlock.parentNode.insertBefore(notesWrapper,tagsBlock);
+    else titleHeading.parentNode.insertBefore(notesWrapper,titleHeading.nextSibling);
+
+    let topContainer=document.querySelector('.fic-label-buttons.fic-top');
+    if(!topContainer){
+      topContainer=document.createElement('div');
+      topContainer.className='fic-label-buttons fic-top';
+      makeButtonRow(topContainer);
+      PRESET_TAGS.forEach(tag=>{
+        const btn=createTagButton(tag,workId,topContainer,workElem,titleHeading,{span:null},false,false);
+        topContainer.appendChild(btn);
+      });
+      titleHeading.parentNode.insertBefore(topContainer,titleHeading);
+    }
+    updateButtons(topContainer,currentLabel);
+
+    const kudosRef=document.querySelector('#kudos');
+    if(kudosRef&&!document.querySelector('.fic-label-buttons.fic-bottom')){
+      const bottomContainer=document.createElement('div');
+      bottomContainer.className='fic-label-buttons fic-bottom';
+      makeButtonRow(bottomContainer);
+      PRESET_TAGS.forEach(tag=>{
+        const btn=createTagButton(tag,workId,bottomContainer,workElem,titleHeading,{span:null},false,false);
+        bottomContainer.appendChild(btn);
+      });
+      kudosRef.parentNode.insertBefore(bottomContainer,kudosRef);
+      updateButtons(bottomContainer,currentLabel);
+    }
+
+    // Don't apply border highlighting on individual work pages
+    // applyBorderHighlight(workElem,currentLabel);
+  }
+
+  function init(){
+    if(document.querySelector('li.work')){
+      // Search results page
+      document.querySelectorAll('li.work').forEach(setupWork);
+    }else{
+      // Individual work page
+      setupWorkPage();
+    }
+
+    const mo=new MutationObserver(m=>m.forEach(x=>x.addedNodes.forEach(n=>{
+      if(n.nodeType!==1)return;
+      if(n.matches?.('li.work'))setupWork(n);
+      if(n.matches?.('div.work'))setupWorkPage();
+      n.querySelectorAll?.('li.work').forEach(setupWork);
+    })));
+    mo.observe(document.querySelector('#main')||document.body,{childList:true,subtree:true});
+  }
+
+  init();
+})();
