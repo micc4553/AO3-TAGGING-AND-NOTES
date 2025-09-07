@@ -1,0 +1,797 @@
+// ==UserScript==
+// @name         AO3 Tagging and Notes
+// @version      3.3
+// @description  Tag AO3 works with Google Sheets sync for cross-device data
+// @match        https://archiveofourown.org/*
+// @icon         https://archiveofourown.org/favicon.ico
+// @grant        GM_xmlhttpRequest
+// ==/UserScript==
+
+(function() {
+  'use strict';
+  const STORAGE_KEY = 'ao3_fic_labels';
+  const NOTES_KEY = 'ao3_fic_notes';
+  const AUTHOR_NOTES_KEY = 'ao3_author_notes';
+  const SETTINGS_KEY = 'ao3_sync_settings';
+  const LAST_SYNC_KEY = 'ao3_last_sync';
+
+  const PRESET_TAGS = ['Finished', 'To Read', 'Not Interested', 'Dropped', 'Disliked', 'Favourite'];
+  const COLLAPSE_TAGS = ['Finished', 'Not Interested', 'Dropped', 'Disliked'];
+  const BORDER_TAGS = ['To Read', 'Favourite'];
+  const TAG_COLORS = {
+    'Finished': { bg: '#8b7db8', text: '#fff' }, // purple
+    'To Read': { bg: '#6b8a7a', text: '#fff' }, // green
+    'Not Interested': { bg: '#6e6a86', text: '#fff' }, // grey
+    'Dropped': { bg: '#7a9bb8', text: '#fff' }, // brown
+    'Disliked': { bg: '#8b7355', text: '#000' }, // orange
+    'Favourite': { bg: '#d6a5c9', text: '#000' } // pink
+  };
+
+  // Load sync settings
+  const loadSyncSettings = () => {
+    try {
+      return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  };
+
+  const saveSyncSettings = (settings) => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  };
+
+  // Google Sheets Sync Manager
+  class GoogleSheetsSync {
+    constructor() {
+      this.settings = loadSyncSettings();
+      this.syncInterval = (this.settings.syncInterval || 60) * 1000; // Default 60 seconds
+      this.syncTimer = null;
+      this.countdownTimer = null;
+      this.timeUntilNextSync = 0;
+      this.isSyncing = false;
+      this.isHovering = false;
+      this.initSync();
+    }
+
+    initSync() {
+      if (!this.settings.enabled || !this.settings.sheetUrl) return;
+
+      // Start sync timer
+      this.startSyncTimer();
+
+      // Add sync widget if enabled
+      if (this.settings.showWidget !== false) {
+        this.createSyncWidget();
+      }
+    }
+
+createSyncWidget() {
+  if (document.getElementById('ao3-sync-widget')) return;
+
+  const mobile = window.innerWidth <= 768;
+  const widget = document.createElement('div');
+  widget.id = 'ao3-sync-widget';
+  // IMPORTANT: Apply styles directly to the main widget div, not nested
+  widget.style.cssText = `
+    position:fixed;
+    bottom:15px;
+    left:10px;
+    z-index:10000;
+    display:flex;
+    align-items:center;
+    opacity:${this.settings.syncWidgetOpacity || 0.5};
+    gap:${mobile?'2px':'4px'};
+    padding:${mobile?'2px 3px':'3px 5px'};
+    background:#fff;
+    border:1px solid #ddd;
+    border-radius:${mobile?'10px':'16px'};
+    cursor:pointer;
+    font:${mobile?'11px':'12px'} -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    color:#666;
+    box-shadow:0 2px 8px rgba(0,0,0,0.1);
+    transition:all 0.2s;
+    user-select:none;
+  `;
+
+  widget.innerHTML = `
+    <svg id="sync-icon" width="${mobile?'12':'14'}" height="${mobile?'12':'14'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition:transform 0.3s">
+      <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+    </svg>
+    <span id="sync-status" style="font-weight:500;">Sync</span>
+    <span id="sync-countdown" style="font-size:${mobile?'10px':'11px'};color:#999;margin-left:${mobile?'2px':'4px'};">0s</span>
+  `;
+
+  document.body.appendChild(widget);
+
+  // Add spin animation CSS if not exists
+  if (!document.getElementById('sync-spin-animation')) {
+    const style = document.createElement('style');
+    style.id = 'sync-spin-animation';
+    style.textContent = `
+      @keyframes sync-spin {
+        to { transform: rotate(360deg); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  widget.addEventListener('click', () => {
+    if (!this.isSyncing) this.performSync();
+  });
+
+widget.addEventListener('mouseenter', () => {
+  this.isHovering = true; // Track hover state
+  if (!this.isSyncing) {
+    widget.style.opacity = '1';
+    widget.style.background = '#f8f9fa';
+    widget.style.borderColor = '#0066cc';
+    widget.style.transform = 'translateY(-1px)';
+  }
+});
+
+widget.addEventListener('mouseleave', () => {
+  this.isHovering = false; // Track hover state
+  widget.style.opacity = this.settings.syncWidgetOpacity || 0.5;
+  widget.style.transform = '';
+  this.updateWidget(); // Now it's safe to call this
+});
+
+  this.updateWidget();
+
+  // Start countdown timer
+  this.startCountdownTimer();
+}
+
+    startCountdownTimer() {
+      if (this.countdownTimer) clearInterval(this.countdownTimer);
+
+      this.countdownTimer = setInterval(() => {
+        if (this.timeUntilNextSync > 0) {
+          this.timeUntilNextSync--;
+        }
+        this.updateWidget();
+      }, 1000);
+    }
+
+updateWidget(status = 'idle') {
+  const widget = document.getElementById('ao3-sync-widget');
+  if (!widget) return;
+
+  const icon = widget.querySelector('#sync-icon');
+  const statusText = widget.querySelector('#sync-status');
+  const countdown = widget.querySelector('#sync-countdown');
+
+  // Calculate countdown display
+  let countdownText = '';
+  if (this.timeUntilNextSync > 0) {
+    if (this.timeUntilNextSync > 60) {
+      const minutes = Math.floor(this.timeUntilNextSync / 60);
+      const seconds = this.timeUntilNextSync % 60;
+      countdownText = `${minutes}m ${seconds}s`;
+    } else {
+      countdownText = `${this.timeUntilNextSync}s`;
+    }
+  } else {
+    countdownText = 'now';
+  }
+
+  // Don't override hover styles if user is hovering
+  const shouldApplyHoverStyles = this.isHovering && !this.isSyncing;
+
+  switch(status) {
+    case 'syncing':
+      icon.style.animation = 'sync-spin 1s linear infinite';
+      statusText.textContent = 'Syncing...';
+      if (countdown) countdown.textContent = '';
+      if (!shouldApplyHoverStyles) {
+        widget.style.background = '#e3f2fd';
+        widget.style.borderColor = '#2196f3';
+        widget.style.color = '#1976d2';
+        widget.style.opacity = this.settings.syncWidgetOpacity || 0.5;
+      }
+      break;
+
+    case 'success':
+      icon.style.animation = 'none';
+      statusText.textContent = 'Synced!';
+      if (countdown) countdown.textContent = '';
+      if (!shouldApplyHoverStyles) {
+        widget.style.background = '#e8f5e8';
+        widget.style.borderColor = '#4caf50';
+        widget.style.color = '#2e7d32';
+        widget.style.opacity = this.settings.syncWidgetOpacity || 0.5;
+      }
+      setTimeout(() => this.updateWidget(), 3000);
+      break;
+
+    case 'error':
+      icon.style.animation = 'none';
+      statusText.textContent = 'Error';
+      if (countdown) countdown.textContent = '';
+      if (!shouldApplyHoverStyles) {
+        widget.style.background = '#ffebee';
+        widget.style.borderColor = '#f44336';
+        widget.style.color = '#c62828';
+        widget.style.opacity = this.settings.syncWidgetOpacity || 0.5;
+      }
+      setTimeout(() => this.updateWidget(), 3000);
+      break;
+
+    default:
+      icon.style.animation = 'none';
+      statusText.textContent = 'Sync';
+      if (countdown) countdown.textContent = countdownText;
+      if (!shouldApplyHoverStyles) {
+        widget.style.background = '#fff';
+        widget.style.borderColor = '#ddd';
+        widget.style.color = '#666';
+        widget.style.opacity = this.settings.syncWidgetOpacity || 0.5;
+        widget.style.transform = '';
+      }
+  }
+}
+
+startSyncTimer() {
+  if (this.syncTimer) clearInterval(this.syncTimer);
+
+  // Calculate time since last sync
+  const lastSync = parseInt(localStorage.getItem(LAST_SYNC_KEY)) || 0;
+  const timeSinceLastSync = Date.now() - lastSync;
+  const timeUntilNextSync = Math.max(0, this.syncInterval - timeSinceLastSync);
+
+  this.timeUntilNextSync = Math.ceil(timeUntilNextSync / 1000);
+
+  // Only sync immediately if interval has passed
+  if (timeUntilNextSync <= 0) {
+    this.performSync();
+    this.timeUntilNextSync = this.syncInterval / 1000;
+  }
+
+  // Set up periodic sync
+  this.syncTimer = setInterval(() => {
+    this.timeUntilNextSync = this.syncInterval / 1000;
+    this.performSync();
+  }, this.syncInterval);
+}
+
+      stopSyncTimer() {
+  // Clear the periodic sync interval if it's active
+  if (this.syncTimer) {
+    clearInterval(this.syncTimer);
+    this.syncTimer = null;
+  }
+  // Clear the countdown timer if it's active
+  if (this.countdownTimer) {
+    clearInterval(this.countdownTimer);
+    this.countdownTimer = null;
+  }
+}
+
+    async performSync() {
+      if (this.isSyncing || !this.settings.sheetUrl) return;
+
+      this.isSyncing = true;
+      this.updateWidget('syncing');
+
+      try {
+        // Prepare data to sync
+        const syncData = {
+          action: 'sync',
+          data: {
+            labels: localStorage.getItem(STORAGE_KEY) || '{}',
+            notes: localStorage.getItem(NOTES_KEY) || '{}',
+            authorNotes: localStorage.getItem(AUTHOR_NOTES_KEY) || '{}',
+            timestamp: Date.now()
+          }
+        };
+
+        // Send sync request
+        const response = await this.sendRequest(syncData);
+
+        if (response.success) {
+          // Update local storage with server data if newer
+          if (response.data) {
+            this.mergeData(response.data);
+          }
+
+          localStorage.setItem(LAST_SYNC_KEY, Date.now().toString());
+          this.updateWidget('success');
+          console.log('[AO3 Sync] Sync completed successfully');
+        } else {
+          throw new Error(response.error || 'Sync failed');
+        }
+      } catch (error) {
+        console.error('[AO3 Sync] Sync error:', error);
+        this.updateWidget('error');
+      } finally {
+        this.isSyncing = false;
+      }
+    }
+
+    sendRequest(data) {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'POST',
+          url: this.settings.sheetUrl,
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          data: JSON.stringify(data),
+          timeout: 15000,
+          onload: (response) => {
+            try {
+              const result = JSON.parse(response.responseText);
+              resolve(result);
+            } catch (error) {
+              reject(new Error('Invalid response'));
+            }
+          },
+          onerror: (error) => {
+            reject(new Error('Network error'));
+          },
+          ontimeout: () => {
+            reject(new Error('Request timeout'));
+          }
+        });
+      });
+    }
+
+    mergeData(serverData) {
+      // Merge labels
+      if (serverData.labels) {
+        const localLabels = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        const serverLabels = JSON.parse(serverData.labels);
+        const merged = {...localLabels, ...serverLabels};
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+      }
+
+      // Merge notes
+      if (serverData.notes) {
+        const localNotes = JSON.parse(localStorage.getItem(NOTES_KEY) || '{}');
+        const serverNotes = JSON.parse(serverData.notes);
+
+        // Merge based on timestamp - keep newer versions
+        Object.keys(serverNotes).forEach(id => {
+          const local = localNotes[id];
+          const server = serverNotes[id];
+
+          if (!local || (server.date && local.date && new Date(server.date) > new Date(local.date))) {
+            localNotes[id] = server;
+          }
+        });
+
+        localStorage.setItem(NOTES_KEY, JSON.stringify(localNotes));
+      }
+
+      // Merge author notes
+      if (serverData.authorNotes) {
+        const localNotes = JSON.parse(localStorage.getItem(AUTHOR_NOTES_KEY) || '{}');
+        const serverNotes = JSON.parse(serverData.authorNotes);
+
+        Object.keys(serverNotes).forEach(id => {
+          const local = localNotes[id];
+          const server = serverNotes[id];
+
+          if (!local || (server.date && local.date && new Date(server.date) > new Date(local.date))) {
+            localNotes[id] = server;
+          }
+        });
+
+        localStorage.setItem(AUTHOR_NOTES_KEY, JSON.stringify(localNotes));
+      }
+    }
+
+    // Initialize Google Sheets storage
+    async initializeStorage() {
+      if (!this.settings.sheetUrl) {
+        alert('Please set the Google Sheets URL first');
+        return;
+      }
+
+      try {
+        const response = await this.sendRequest({
+          action: 'initialize',
+          data: {
+            labels: localStorage.getItem(STORAGE_KEY) || '{}',
+            notes: localStorage.getItem(NOTES_KEY) || '{}',
+            authorNotes: localStorage.getItem(AUTHOR_NOTES_KEY) || '{}'
+          }
+        });
+
+        if (response.success) {
+          alert('Google Sheets storage initialized successfully!');
+          this.settings.initialized = true;
+          saveSyncSettings(this.settings);
+        } else {
+          alert('Failed to initialize: ' + (response.error || 'Unknown error'));
+        }
+      } catch (error) {
+        alert('Error initializing storage: ' + error.message);
+      }
+    }
+  }
+
+  // Add CSS for sync animation
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  `;
+  document.head.appendChild(style);
+
+  // Initialize sync manager
+  let syncManager = null;
+  const settings = loadSyncSettings();
+  if (settings.enabled && settings.sheetUrl) {
+    syncManager = new GoogleSheetsSync();
+  }
+
+  // Original script functions with sync integration
+  const loadJSON = (k,f={})=>{try{return JSON.parse(localStorage.getItem(k)||JSON.stringify(f));}catch{return f;}};
+const saveJSON = (k,v)=>{
+  localStorage.setItem(k,JSON.stringify(v));
+};
+
+  const loadLabels = ()=>loadJSON(STORAGE_KEY,{});
+  const saveLabels = v=>saveJSON(STORAGE_KEY,v);
+  const loadNotes = ()=>loadJSON(NOTES_KEY,{});
+  const saveNotes = v=>saveJSON(NOTES_KEY,v);
+  const loadAuthorNotes = ()=>loadJSON(AUTHOR_NOTES_KEY,{});
+  const saveAuthorNotes = v=>saveJSON(AUTHOR_NOTES_KEY,v);
+  const formatDateTime = d=>d.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  // Settings panel for sync configuration
+  function createSettingsPanel() {
+    const panel = document.createElement('div');
+    panel.innerHTML = `
+      <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border:2px solid #333;border-radius:8px;padding:20px;z-index:100000;max-width:500px;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+        <h3 style="margin-top:0;">Google Sheets Sync Settings</h3>
+        <div style="margin:10px 0;">
+          <label>
+            <input type="checkbox" id="sync-enabled" ${settings.enabled ? 'checked' : ''}>
+            Enable Google Sheets Sync
+          </label>
+        </div>
+        <div style="margin:10px 0;">
+          <label style="display:block;margin-bottom:5px;">Google Apps Script URL:</label>
+          <input type="text" id="sheet-url" value="${settings.sheetUrl || ''}" style="width:100%;padding:5px;box-sizing:border-box;" placeholder="https://script.google.com/macros/s/.../exec">
+        </div>
+        <div style="margin:10px 0;">
+          <label style="display:block;margin-bottom:5px;">Sync Interval (seconds):</label>
+          <input type="number" id="sync-interval" value="${settings.syncInterval || 60}" min="30" max="3600" style="width:100px;padding:5px;">
+        </div>
+        <div style="margin:10px 0;">
+          <label>
+            <input type="checkbox" id="show-widget" ${settings.showWidget !== false ? 'checked' : ''}>
+            Show sync widget
+          </label>
+        </div>
+        <div style="margin-top:20px;display:flex;gap:10px;">
+          <button id="save-sync-settings" style="padding:8px 16px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Save</button>
+          <button id="init-sync-storage" style="padding:8px 16px;background:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;">Initialize Storage</button>
+          <button id="close-settings" style="padding:8px 16px;background:#666;color:white;border:none;border-radius:4px;cursor:pointer;">Close</button>
+        </div>
+      </div>
+      <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:99999;"></div>
+    `;
+
+    document.body.appendChild(panel);
+
+    // Event handlers
+    panel.querySelector('#save-sync-settings').addEventListener('click', () => {
+      const newSettings = {
+        enabled: panel.querySelector('#sync-enabled').checked,
+        sheetUrl: panel.querySelector('#sheet-url').value,
+        syncInterval: parseInt(panel.querySelector('#sync-interval').value),
+        showWidget: panel.querySelector('#show-widget').checked,
+        initialized: settings.initialized
+      };
+
+      saveSyncSettings(newSettings);
+      alert('Settings saved! Please reload the page for changes to take effect.');
+      panel.remove();
+    });
+
+    panel.querySelector('#init-sync-storage').addEventListener('click', async () => {
+      if (!syncManager) {
+        syncManager = new GoogleSheetsSync();
+      }
+      await syncManager.initializeStorage();
+    });
+
+    panel.querySelector('#close-settings').addEventListener('click', () => {
+      panel.remove();
+    });
+  }
+
+// Add settings button to page
+  function addSettingsButton() {
+    // Check multiple potential locations for the navigation
+    const possibleNavs = [
+      'ul.primary.navigation.actions',
+      'ul.primary.navigation',
+      'ul.navigation.actions',
+      '.primary.header ul',
+      'nav ul',
+      '#header .navigation ul'
+    ];
+
+    let nav = null;
+    for (const selector of possibleNavs) {
+      nav = document.querySelector(selector);
+      if (nav) break;
+    }
+
+    // If no navigation found, create our own container
+    if (!nav) {
+      // Try to find header area
+      const header = document.querySelector('#header') || document.querySelector('header') || document.querySelector('#main');
+      if (header) {
+        nav = document.createElement('ul');
+        nav.style.cssText = 'list-style:none;padding:0;margin:10px 0;display:flex;gap:10px;';
+        header.insertBefore(nav, header.firstChild);
+      }
+    }
+
+    // Add the settings button if we have a navigation container and button doesn't exist
+    if (nav && !document.querySelector('#sync-settings-btn')) {
+      const li = document.createElement('li');
+      li.innerHTML = '<a href="#" id="sync-settings-btn" style="color:##FFF;">Sync</a>';
+      nav.appendChild(li);
+
+      li.querySelector('#sync-settings-btn').addEventListener('click', (e) => {
+        e.preventDefault();
+        createSettingsPanel();
+      });
+    }
+  }
+
+  // Rest of the original script remains the same...
+  function makeButtonRow(c){
+    c.style.display='flex';c.style.flexWrap='wrap';c.style.justifyContent='flex-end';
+    c.style.gap='2px';c.style.width='100%';c.style.clear='both';c.style.marginTop='0.5em';
+  }
+
+  function setLabelColor(el,tag){
+    const c=TAG_COLORS[tag];if(!c)return;
+    el.style.color=c.bg;el.style.fontWeight='bold';el.style.marginRight='0.35em';
+  }
+
+  function applyBorderHighlight(work,tag){
+    work.style.border='';work.style.boxShadow='';work.style.borderRadius='';
+    if(BORDER_TAGS.includes(tag)){
+      const color=TAG_COLORS[tag]?.bg||'#000';
+      work.style.border=`2px solid ${color}`;
+      work.style.boxShadow=`0 0 8px 2px ${color}55`;
+      work.style.borderRadius='6px';
+    }
+  }
+
+  function applyCollapse(work,collapse){
+    const hide=work.querySelectorAll('.tags,.summary,.stats,.fandoms,blockquote,.series,.collections');
+    hide.forEach(el=>el.style.display=collapse?'none':'');
+    work.style.opacity=collapse?'0.6':'1.0';
+    work.dataset.collapsed=collapse?'true':'false';
+  }
+
+  function createNoteUI(id, isAuthor=false){
+    const notes = isAuthor ? loadAuthorNotes() : loadNotes();
+    const data=notes[id];
+
+    const w=document.createElement('div');w.className='fic-note-wrapper';
+    w.style.margin='0px 0 8px 0';w.style.padding='0';w.style.border='none';w.style.background='transparent';w.style.textAlign='center';
+    w.style.width = '70%';
+    w.style.maxWidth = '600px';
+    w.style.minWidth = '300px';
+    w.style.marginLeft = 'auto'; w.style.marginRight = 'auto';
+
+    const showAdd=()=>{
+        w.innerHTML='';
+  w.style.border='none';
+  w.style.borderRadius='';
+  w.style.padding='0';
+      w.innerHTML='';const b=document.createElement('button');
+      b.type='button';b.innerHTML=isAuthor ? '📝 Add Author Note' : '📝 Add Story Note';b.style.border='1.5px dashed #999';
+      b.style.background='transparent';b.style.cursor='pointer';b.style.display='inline-block';
+      b.style.textAlign='center';b.style.padding='4px';b.style.fontSize='0.9em';b.style.borderRadius='4px';
+      b.addEventListener('click',e=>{e.stopPropagation();showEdit('');});
+      w.appendChild(b);
+    };
+
+    const showView=(obj)=>{
+      w.innerHTML='';
+      w.style.border='1.5px solid #999';
+      w.style.borderRadius='4px';
+      w.style.padding='6px';
+      const h=document.createElement('div');h.style.display='flex';h.style.justifyContent='space-between';
+      h.style.alignItems='center';h.style.marginBottom='4px';
+      const l=document.createElement('div');l.innerHTML=isAuthor ? '<strong>📝 Your Author Note</strong>' : '<strong>📝 Your Story Note</strong>';
+      const r=document.createElement('div');r.style.display='flex';r.style.gap='6px';
+      const ts=document.createElement('span');ts.textContent=obj.date;ts.style.color='#777';ts.style.fontSize='0.85em';ts.style.position='relative';ts.style.top='6px';
+      const ebtn=document.createElement('button');ebtn.textContent='✏️';ebtn.style.background='transparent';
+      ebtn.style.border='none';ebtn.style.cursor='pointer';ebtn.addEventListener('click',e=>{e.stopPropagation();showEdit(obj.text);});
+      const dbtn=document.createElement('button');dbtn.textContent='🗑️';dbtn.style.background='transparent';
+      dbtn.style.border='none';dbtn.style.cursor='pointer';
+
+      dbtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const confirmDelete = confirm(isAuthor ? "Are you sure you want to delete this note?" : "Are you sure you want to delete this note?");
+        if (!confirmDelete) return;
+        const n = isAuthor ? loadAuthorNotes() : loadNotes();
+        delete n[id];
+        if (isAuthor) saveAuthorNotes(n); else saveNotes(n);
+        showAdd();
+      });
+
+      r.append(ts,ebtn,dbtn);h.append(l,r);w.appendChild(h);
+
+      const c=document.createElement('div');c.textContent=obj.text;c.style.whiteSpace='pre-wrap';
+      c.style.width='100%';c.style.boxSizing='border-box';
+      c.style.borderTop='1px solid #ccc';c.style.paddingTop='8px';c.style.marginTop='8px';
+      w.appendChild(c);
+    };
+
+    const showEdit=(text)=>{
+      w.innerHTML='';
+      const container=document.createElement('div');
+      container.style.display='flex';
+      container.style.justifyContent='center';
+      container.style.width='100%';
+
+      const ta=document.createElement('textarea');
+      ta.value=text||'';
+      ta.style.width='100%';
+      ta.style.maxWidth='100%';
+      ta.style.minHeight='80px';
+      ta.style.border='1px solid #ccc';ta.style.borderRadius='6px';ta.style.padding='6px';
+      container.appendChild(ta);
+      w.appendChild(container);
+
+      const row=document.createElement('div');row.style.textAlign='center';
+      row.style.marginTop='8px';
+      const save=document.createElement('button');save.textContent='💾 Save';save.style.marginRight='6px';
+      save.addEventListener('click',e=>{e.stopPropagation();const v=ta.value.trim();if(!v){showAdd();return;}const n=isAuthor ? loadAuthorNotes() : loadNotes();n[id]={text:v,date:formatDateTime(new Date())};if(isAuthor) saveAuthorNotes(n); else saveNotes(n);showView(n[id]);});
+      const cancel=document.createElement('button');cancel.textContent='❌ Cancel';
+      cancel.addEventListener('click',e=>{e.stopPropagation();const n=isAuthor ? loadAuthorNotes() : loadNotes();if(n[id])showView(n[id]);else showAdd();});
+      row.append(save,cancel);w.appendChild(row);
+    };
+
+    if(data)showView(data);else showAdd();
+    return w;
+  }
+
+  function createTagButton(tag,id,c,work,h,ref,showLabel,isSearchResult=true){
+    const b=document.createElement('button');b.className='fic-tag-btn';b.dataset.tag=tag;b.textContent=tag;
+    b.style.fontSize='0.8em';b.style.padding='2px 6px';b.style.border='1px solid #ccc';b.style.borderRadius='4px';b.style.margin='1px';
+    b.addEventListener('click',e=>{
+      e.stopPropagation();const labels=loadLabels();let cur=labels[id]||'';
+      if(cur===tag){delete labels[id];cur='';if(ref.span){ref.span.remove();ref.span=null;}}
+      else{labels[id]=tag;cur=tag;if(showLabel){if(!ref.span){const s=document.createElement('span');s.className='fic-label';h.insertBefore(s,h.firstChild);ref.span=s;}ref.span.textContent=`[${cur}]`;setLabelColor(ref.span,cur);}}
+      saveLabels(labels);updateButtons(c,cur);
+
+      if(isSearchResult){
+        applyCollapse(work,COLLAPSE_TAGS.includes(cur));
+        applyBorderHighlight(work,cur);
+      }
+    });return b;
+  }
+
+  function updateButtons(c,cur){c.querySelectorAll('button.fic-tag-btn').forEach(b=>{
+    const tag=b.dataset.tag;const colors=TAG_COLORS[tag]||{bg:'#eee',text:'#000'};
+    if(tag===cur){b.style.background=colors.bg;b.style.color=colors.text;b.style.borderColor=colors.bg;}
+    else{b.style.background='#eee';b.style.color='#000';b.style.borderColor='#ccc';}
+  });}
+
+  function setupWork(work){
+    if(work.dataset.proc)return;work.dataset.proc='1';
+    const id=(work.id.match(/\d+/)||[])[0];if(!id)return;
+    const labels=loadLabels();const cur=labels[id]||'';
+    const heading=work.querySelector('h4.heading');if(!heading)return;
+    const ref={span:null};if(cur){const s=document.createElement('span');s.className='fic-label';s.textContent=`[${cur}]`;setLabelColor(s,cur);heading.insertBefore(s,heading.firstChild);ref.span=s;}
+    const note=createNoteUI(id);const tags=work.querySelector('.tags');if(tags)tags.parentNode.insertBefore(note,tags);else heading.parentNode.insertBefore(note,heading.nextSibling);
+    let c=work.querySelector(':scope > .fic-label-buttons');if(!c){c=document.createElement('div');c.className='fic-label-buttons';makeButtonRow(c);PRESET_TAGS.forEach(t=>c.appendChild(createTagButton(t,id,c,work,heading,ref,true,true)));work.appendChild(c);}updateButtons(c,cur);
+    applyCollapse(work,COLLAPSE_TAGS.includes(cur));applyBorderHighlight(work,cur);
+    if(!work._bound){work.addEventListener('click',e=>{if(e.target.closest('a,button,.fic-note-wrapper'))return;const l=loadLabels()[id]||'';if(!COLLAPSE_TAGS.includes(l))return;applyCollapse(work,work.dataset.collapsed!=='true');});work._bound=1;}
+  }
+
+  function setupWorkPage(){
+    if(document.querySelector('.ao3-personal-tools'))return;
+
+    const idMatch=location.pathname.match(/works\/(\d+)/);
+    if(!idMatch)return;
+    const workId=idMatch[1];
+
+    const labels=loadLabels();
+    const currentLabel=labels[workId]||'';
+
+    const workMeta = document.querySelector('.work.meta.group');
+    if(!workMeta)return;
+
+    const toolsWrapper = document.createElement('div');
+    toolsWrapper.className = 'ao3-personal-tools';
+    toolsWrapper.style.margin = '1em 0';
+    toolsWrapper.style.padding = '1em';
+
+    const sectionTitle = document.createElement('h3');
+    sectionTitle.style.margin = '0 0 0.5em 0';
+    sectionTitle.style.fontSize = '1.1em';
+    sectionTitle.style.fontWeight = 'bold';
+    toolsWrapper.appendChild(sectionTitle);
+
+    const notesWrapper = createNoteUI(workId);
+    toolsWrapper.appendChild(notesWrapper);
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'fic-label-buttons work-page-buttons';
+    buttonContainer.style.marginTop = '0.5em';
+    makeButtonRow(buttonContainer);
+
+    PRESET_TAGS.forEach(tag => {
+      const btn = createTagButton(tag, workId, buttonContainer, document.body, workMeta, {span:null}, false, false);
+      buttonContainer.appendChild(btn);
+    });
+
+    toolsWrapper.appendChild(buttonContainer);
+    updateButtons(buttonContainer, currentLabel);
+
+    workMeta.parentNode.insertBefore(toolsWrapper, workMeta.nextSibling);
+  }
+
+  function isWorkPage() {
+    const workPagePatterns = [
+      /\/works\/.*(?:chapters|view_full_work)/,
+      /works\/\d+(#\w+-?\w*)?$/
+    ];
+    return workPagePatterns.some(pattern => pattern.test(window.location.href));
+  }
+
+  function isAuthorPage() {
+    return /\/users\/[^\/]+\/pseuds\/[^\/]+$/.test(window.location.pathname);
+  }
+
+  function setupAuthorPage(){
+    if(document.querySelector('.author-note-wrapper'))return;
+
+    const pathMatch = window.location.pathname.match(/\/users\/([^\/]+)\/pseuds\/([^\/]+)$/);
+    if(!pathMatch)return;
+    const authorId = `author_${pathMatch[1]}_${pathMatch[2]}`;
+
+    const target = document.querySelector('.user.home.profile') ||
+                   document.querySelector('.profile') ||
+                   document.querySelector('#main');
+    if (!target) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.classList.add('author-note-wrapper');
+
+    const noteUI = createNoteUI(authorId, true);
+    wrapper.appendChild(noteUI);
+
+    target.insertAdjacentElement('afterbegin', wrapper);
+  }
+
+  function init(){
+    // Add settings button
+    addSettingsButton();
+
+    if(isWorkPage()){
+      setupWorkPage();
+    } else if(isAuthorPage()){
+      setupAuthorPage();
+    } else {
+      document.querySelectorAll('li.work, li.bookmark').forEach(setupWork);
+    }
+
+    const mo=new MutationObserver(m=>m.forEach(x=>x.addedNodes.forEach(n=>{
+      if(n.nodeType!==1)return;
+      if(n.matches?.('li.work, li.bookmark'))setupWork(n);
+      if(isWorkPage() && n.matches?.('div.work, #main'))setupWorkPage();
+      if(isAuthorPage() && n.matches?.('div.profile, #main'))setupAuthorPage();
+      n.querySelectorAll?.('li.work, li.bookmark').forEach(setupWork);
+    })));
+    mo.observe(document.querySelector('#main')||document.body,{childList:true,subtree:true});
+  }
+
+  init();
+})();
