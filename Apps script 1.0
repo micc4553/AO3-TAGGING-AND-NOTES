@@ -1,0 +1,215 @@
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    const action = data.action;
+    
+    if (action === 'sync') {
+      return handleSync(data.data);
+    } else if (action === 'initialize') {
+      return handleInitialize(data.data);
+    }
+    
+    return ContentService
+      .createTextOutput(JSON.stringify({success: false, error: 'Unknown action'}))
+      .setMimeType(ContentService.MimeType.JSON);
+      
+  } catch (error) {
+    Logger.log('Error: ' + error.toString());
+    return ContentService
+      .createTextOutput(JSON.stringify({success: false, error: error.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleSync(incomingData) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  
+  // Get existing data from sheet
+  const existingData = getStoredData();
+  
+  // Handle deletions BEFORE merging
+  let processedExistingData = existingData;
+  if (incomingData.deletedNotes || incomingData.deletedAuthorNotes) {
+    processedExistingData = handleDeletions(existingData, incomingData);
+  }
+  
+  // Merge incoming data with existing data (after deletions processed)
+  // Pass the deletion arrays so merge knows what to skip
+  const mergedData = mergeData(processedExistingData, incomingData);
+  
+  // Store merged data back to sheet
+  storeData(mergedData);
+  
+  // Return the merged data so client can update
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      success: true, 
+      data: mergedData
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function handleDeletions(existingData, incomingData) {
+  try {
+    const processedData = {...existingData};
+    
+    // Handle deleted notes
+    if (incomingData.deletedNotes && incomingData.deletedNotes.length > 0) {
+      const existingNotes = JSON.parse(processedData.notes || '{}');
+      
+      incomingData.deletedNotes.forEach(deletedId => {
+        delete existingNotes[deletedId];
+        Logger.log('Deleted note: ' + deletedId);
+      });
+      
+      processedData.notes = JSON.stringify(existingNotes);
+    }
+    
+    // Handle deleted author notes
+    if (incomingData.deletedAuthorNotes && incomingData.deletedAuthorNotes.length > 0) {
+      const existingAuthorNotes = JSON.parse(processedData.authorNotes || '{}');
+      
+      incomingData.deletedAuthorNotes.forEach(deletedId => {
+        delete existingAuthorNotes[deletedId];
+        Logger.log('Deleted author note: ' + deletedId);
+      });
+      
+      processedData.authorNotes = JSON.stringify(existingAuthorNotes);
+    }
+    
+    return processedData;
+  } catch (error) {
+    Logger.log('Error handling deletions: ' + error.toString());
+    return existingData; // Return original data if deletion processing fails
+  }
+}
+
+function handleInitialize(incomingData) {
+  // Store initial data
+  storeData(incomingData);
+  
+  return ContentService
+    .createTextOutput(JSON.stringify({success: true}))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getStoredData() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  
+  // Check if we have any data
+  if (sheet.getLastRow() < 2) {
+    return {
+      labels: '{}',
+      notes: '{}',
+      authorNotes: '{}',
+      timestamp: Date.now()
+    };
+  }
+  
+  try {
+    // Assuming data is stored in row 2, columns A-D
+    const range = sheet.getRange(2, 1, 1, 4);
+    const values = range.getValues()[0];
+    
+    return {
+      labels: values[0] || '{}',
+      notes: values[1] || '{}', 
+      authorNotes: values[2] || '{}',
+      timestamp: values[3] || Date.now()
+    };
+  } catch (error) {
+    Logger.log('Error getting stored data: ' + error.toString());
+    return {
+      labels: '{}',
+      notes: '{}',
+      authorNotes: '{}',
+      timestamp: Date.now()
+    };
+  }
+}
+
+function storeData(data) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  
+  // Set up headers if this is first time
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, 4).setValues([['Labels', 'Notes', 'Author Notes', 'Timestamp']]);
+  }
+  
+  // Store data in row 2
+  sheet.getRange(2, 1, 1, 4).setValues([[
+    data.labels || '{}',
+    data.notes || '{}',
+    data.authorNotes || '{}',
+    data.timestamp || Date.now()
+  ]]);
+}
+
+function mergeData(existing, incoming) {
+  try {
+    // Parse JSON strings
+    const existingLabels = JSON.parse(existing.labels || '{}');
+    const incomingLabels = JSON.parse(incoming.labels || '{}');
+    
+    const existingNotes = JSON.parse(existing.notes || '{}');
+    const incomingNotes = JSON.parse(incoming.notes || '{}');
+    
+    const existingAuthorNotes = JSON.parse(existing.authorNotes || '{}');
+    const incomingAuthorNotes = JSON.parse(incoming.authorNotes || '{}');
+    
+    // Merge labels (incoming overwrites existing)
+    const mergedLabels = {...existingLabels, ...incomingLabels};
+    
+    // Merge notes - but don't restore anything that was deleted
+    const mergedNotes = mergeNotesWithDeletionAwareness(existingNotes, incomingNotes, incoming.deletedNotes || []);
+    const mergedAuthorNotes = mergeNotesWithDeletionAwareness(existingAuthorNotes, incomingAuthorNotes, incoming.deletedAuthorNotes || []);
+    
+    return {
+      labels: JSON.stringify(mergedLabels),
+      notes: JSON.stringify(mergedNotes),
+      authorNotes: JSON.stringify(mergedAuthorNotes),
+      timestamp: Math.max(existing.timestamp || 0, incoming.timestamp || 0, Date.now())
+    };
+  } catch (error) {
+    Logger.log('Error merging data: ' + error.toString());
+    return incoming; // Fallback to incoming data
+  }
+}
+
+function mergeNotesWithDeletionAwareness(existing, incoming, deletedIds) {
+  const merged = {...existing};
+  
+  Object.keys(incoming).forEach(id => {
+    // Skip if this ID was marked for deletion in this sync
+    if (deletedIds.includes(id)) {
+      Logger.log('Skipping merge for deleted ID: ' + id);
+      return;
+    }
+    
+    const existingNote = existing[id];
+    const incomingNote = incoming[id];
+    
+    if (!existingNote || 
+        (incomingNote.date && existingNote.date && 
+         new Date(incomingNote.date) > new Date(existingNote.date))) {
+      merged[id] = incomingNote;
+    }
+  });
+  
+  return merged;
+}
+
+// Legacy function - keeping for backwards compatibility
+function mergeNotesByDate(existing, incoming) {
+  return mergeNotesWithDeletionAwareness(existing, incoming, []);
+}
+
+// Test function to check if script is working
+function doGet(e) {
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      message: 'AO3 Sync Script is running',
+      timestamp: new Date().toISOString()
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
