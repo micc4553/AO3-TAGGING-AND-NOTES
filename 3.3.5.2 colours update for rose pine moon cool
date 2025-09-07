@@ -22,8 +22,8 @@
     'Finished': { bg: '#8b7db8', text: '#fff' }, // purple
     'To Read': { bg: '#6b8a7a', text: '#fff' }, // green
     'Not Interested': { bg: '#6e6a86', text: '#fff' }, // grey
-    'Dropped': { bg: '#7a9bb8', text: '#fff' }, // brown
-    'Disliked': { bg: '#8b7355', text: '#000' }, // orange
+    'Dropped': { bg: '#7a9bb8', text: '#fff' }, // blue
+    'Disliked': { bg: '#8b7355', text: '#000' }, // brown
     'Favourite': { bg: '#d6a5c9', text: '#000' } // pink
   };
 
