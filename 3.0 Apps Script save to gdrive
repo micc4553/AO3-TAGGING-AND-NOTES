@@ -1,0 +1,266 @@
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    const action = data.action;
+    
+    if (action === 'sync') {
+      return handleSync(data.data);
+    } else if (action === 'initialize') {
+      return handleInitialize(data.data);
+    }
+    
+    return ContentService
+      .createTextOutput(JSON.stringify({success: false, error: 'Unknown action'}))
+      .setMimeType(ContentService.MimeType.JSON);
+      
+  } catch (error) {
+    Logger.log('Error: ' + error.toString());
+    return ContentService
+      .createTextOutput(JSON.stringify({success: false, error: error.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleSync(incomingData) {
+  // Get existing data from Drive file
+  const existingData = getStoredData();
+  
+  // Handle deletions BEFORE merging
+  let processedExistingData = existingData;
+  if (incomingData.deletedNotes || incomingData.deletedAuthorNotes) {
+    processedExistingData = handleDeletions(existingData, incomingData);
+  }
+  
+  // Merge data
+  const mergedData = mergeData(processedExistingData, incomingData);
+  
+  // Store merged data to Drive file
+  storeData(mergedData);
+  
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      success: true, 
+      data: mergedData
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function handleDeletions(existingData, incomingData) {
+  try {
+    const processedData = {...existingData};
+    
+    // Handle deleted notes
+    if (incomingData.deletedNotes && incomingData.deletedNotes.length > 0) {
+      const existingNotes = JSON.parse(processedData.notes || '{}');
+      
+      incomingData.deletedNotes.forEach(deletedId => {
+        delete existingNotes[deletedId];
+        Logger.log('Deleted note: ' + deletedId);
+      });
+      
+      processedData.notes = JSON.stringify(existingNotes);
+    }
+    
+    // Handle deleted author notes
+    if (incomingData.deletedAuthorNotes && incomingData.deletedAuthorNotes.length > 0) {
+      const existingAuthorNotes = JSON.parse(processedData.authorNotes || '{}');
+      
+      incomingData.deletedAuthorNotes.forEach(deletedId => {
+        delete existingAuthorNotes[deletedId];
+        Logger.log('Deleted author note: ' + deletedId);
+      });
+      
+      processedData.authorNotes = JSON.stringify(existingAuthorNotes);
+    }
+    
+    return processedData;
+  } catch (error) {
+    Logger.log('Error handling deletions: ' + error.toString());
+    return existingData; // Return original data if deletion processing fails
+  }
+}
+
+function handleInitialize(incomingData) {
+  // Store initial data
+  storeData(incomingData);
+  
+  return ContentService
+    .createTextOutput(JSON.stringify({success: true}))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getStoredData() {
+  const fileName = 'AO3_Sync_Data.json';
+  
+  try {
+    const file = getOrCreateDataFile(fileName);
+    const content = file.getBlob().getDataAsString();
+    
+    if (!content || content.trim() === '') {
+      Logger.log('File is empty, returning default data');
+      return getDefaultData();
+    }
+    
+    const data = JSON.parse(content);
+    Logger.log('Data loaded from Drive file successfully');
+    Logger.log('File size: ' + content.length + ' characters');
+    
+    return {
+      labels: data.labels || '{}',
+      notes: data.notes || '{}',
+      authorNotes: data.authorNotes || '{}',
+      timestamp: data.timestamp || Date.now()
+    };
+    
+  } catch (error) {
+    Logger.log('Error reading data from Drive: ' + error.toString());
+    Logger.log('Returning default data');
+    return getDefaultData();
+  }
+}
+
+function storeData(data) {
+  const fileName = 'AO3_Sync_Data.json';
+  
+  try {
+    // Check file size limit (10MB for Apps Script)
+    const jsonContent = JSON.stringify({
+      ...data,
+      lastUpdated: new Date().toISOString(),
+      timestamp: data.timestamp || Date.now()
+    }, null, 2);
+    
+    if (jsonContent.length > 10 * 1024 * 1024) {
+      throw new Error('Data exceeds 10MB limit');
+    }
+    
+    // Get or create the file
+    const file = getOrCreateDataFile(fileName);
+    
+    // Save data
+    file.setContent(jsonContent);
+    
+    Logger.log('Data saved to Drive file successfully');
+    Logger.log('File size: ' + jsonContent.length + ' characters');
+    
+  } catch (error) {
+    Logger.log('Error storing data to Drive: ' + error.toString());
+    throw error; // Re-throw so sync can handle the error
+  }
+}
+
+function mergeData(existing, incoming) {
+  try {
+    // Parse JSON strings
+    const existingLabels = JSON.parse(existing.labels || '{}');
+    const incomingLabels = JSON.parse(incoming.labels || '{}');
+    
+    const existingNotes = JSON.parse(existing.notes || '{}');
+    const incomingNotes = JSON.parse(incoming.notes || '{}');
+    
+    const existingAuthorNotes = JSON.parse(existing.authorNotes || '{}');
+    const incomingAuthorNotes = JSON.parse(incoming.authorNotes || '{}');
+    
+    // Merge labels (incoming overwrites existing)
+    const mergedLabels = {...existingLabels, ...incomingLabels};
+    
+    // Merge notes - but don't restore anything that was deleted
+    const mergedNotes = mergeNotesWithDeletionAwareness(existingNotes, incomingNotes, incoming.deletedNotes || []);
+    const mergedAuthorNotes = mergeNotesWithDeletionAwareness(existingAuthorNotes, incomingAuthorNotes, incoming.deletedAuthorNotes || []);
+    
+    return {
+      labels: JSON.stringify(mergedLabels),
+      notes: JSON.stringify(mergedNotes),
+      authorNotes: JSON.stringify(mergedAuthorNotes),
+      timestamp: Math.max(existing.timestamp || 0, incoming.timestamp || 0, Date.now())
+    };
+  } catch (error) {
+    Logger.log('Error merging data: ' + error.toString());
+    return incoming; // Fallback to incoming data
+  }
+}
+
+function mergeNotesWithDeletionAwareness(existing, incoming, deletedIds) {
+  const merged = {...existing};
+  
+  Object.keys(incoming).forEach(id => {
+    // Skip if this ID was marked for deletion in this sync
+    if (deletedIds.includes(id)) {
+      Logger.log('Skipping merge for deleted ID: ' + id);
+      return;
+    }
+    
+    const existingNote = existing[id];
+    const incomingNote = incoming[id];
+    
+    if (!existingNote || 
+        (incomingNote.date && existingNote.date && 
+         new Date(incomingNote.date) > new Date(existingNote.date))) {
+      merged[id] = incomingNote;
+    }
+  });
+  
+  return merged;
+}
+
+function doGet(e) {
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      message: 'AO3 Sync Script is running',
+      timestamp: new Date().toISOString()
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getOrCreateDataFile(fileName) {
+  // Try to find existing file in root Drive
+  const files = DriveApp.getFilesByName(fileName);
+  
+  if (files.hasNext()) {
+    const file = files.next();
+    Logger.log('Using existing file: ' + file.getId());
+    return file;
+  } else {
+    // Create new file with default data
+    const defaultData = getDefaultData();
+    const initialContent = JSON.stringify({
+      ...defaultData,
+      created: new Date().toISOString(),
+      lastUpdated: new Date().toISOString()
+    }, null, 2);
+    
+    const newFile = DriveApp.createFile(fileName, initialContent, 'application/json');
+    Logger.log('Created new file: ' + newFile.getId());
+    Logger.log('File URL: ' + newFile.getUrl());
+    return newFile;
+  }
+}
+
+function getDefaultData() {
+  return {
+    labels: '{}',
+    notes: '{}',
+    authorNotes: '{}',
+    timestamp: Date.now()
+  };
+}
+
+function getDataStats() {
+  const fileName = 'AO3_Sync_Data.json';
+  
+  try {
+    const file = getOrCreateDataFile(fileName);
+    const content = file.getBlob().getDataAsString();
+    const data = JSON.parse(content);
+    
+    Logger.log('=== DATA FILE STATISTICS ===');
+    Logger.log('File Size: ' + Math.round(content.length / 1024) + ' KB');
+    Logger.log('Labels: ' + Object.keys(JSON.parse(data.labels || '{}')).length);
+    Logger.log('Story Notes: ' + Object.keys(JSON.parse(data.notes || '{}')).length);
+    Logger.log('Author Notes: ' + Object.keys(JSON.parse(data.authorNotes || '{}')).length);
+    Logger.log('File URL: ' + file.getUrl());
+    
+  } catch (error) {
+    Logger.log('Error getting stats: ' + error.toString());
+  }
+}
