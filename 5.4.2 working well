@@ -1354,7 +1354,7 @@ window.isValidAuthorId = isValidAuthorId;
 
   return false;
 }
-  
+
   function createTagButton(tag,id,c,work,h,ref,showLabel,isSearchResult=true) {
     const b=document.createElement('button');
     b.className='fic-tag-btn';
