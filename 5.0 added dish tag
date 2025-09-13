@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AO3 Tagging and Notes
-// @version      4.5
-// @description  Tag AO3 works with Google Sheets sync for cross-device data
+// @version      5.0
+// @description  Tag AO3 works with Google sync for cross-device data
 // @match        https://archiveofourown.org/*
 // @icon         https://archiveofourown.org/favicon.ico
 // @grant        GM_xmlhttpRequest
@@ -44,7 +44,7 @@ const TAG_COLORS = {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   };
 
-  // Google Sheets Sync Manager
+  // Google Sync Manager
   class GoogleSheetsSync {
     constructor() {
       this.settings = loadSyncSettings();
@@ -442,7 +442,7 @@ mergeData(serverData) {
 }
 async initializeStorage() {
   if (!this.settings.sheetUrl) {
-    alert('Please set the Google Sheets URL first');
+    alert('Please set the Deployment URL first');
     return;
   }
 
@@ -464,7 +464,7 @@ async initializeStorage() {
       localStorage.setItem(LAST_SYNCED_NOTES_KEY, currentNotes);
       localStorage.setItem(LAST_SYNCED_AUTHOR_NOTES_KEY, currentAuthorNotes);
 
-      alert('Google Sheets storage initialized successfully!');
+      alert('Google storage initialized successfully!');
       this.settings.initialized = true;
       saveSyncSettings(this.settings);
     } else {
