@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AO3 Tagging and Notes
-// @version      5.4.1
+// @version      5.4.2
 // @description  Tag AO3 works with Google sync for cross-device data
 // @match        https://archiveofourown.org/*
 // @icon         https://archiveofourown.org/favicon.ico
@@ -631,7 +631,7 @@ function createTagBrowserModal() {
     return tagGroups;
   }
 
-  const tagOrder = ['Finished', 'To Read', 'Not Interested', 'Dropped', 'Disliked', 'Favourite'];
+const tagOrder = ['Finished', 'To Read', 'Not Interested', 'Dropped', 'Disliked', 'Favourite', 'Dish'];
   const sortedTags = tagOrder.filter(tag => tagGroups[tag]);
   const tagsList = sortedTags.map(tag => {
     const count = tagGroups[tag].length;
