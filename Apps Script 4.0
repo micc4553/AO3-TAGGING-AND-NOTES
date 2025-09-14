@@ -1,0 +1,404 @@
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    const action = data.action;
+    
+    if (action === 'sync') {
+      return handleSync(data.data);
+    } else if (action === 'initialize') {
+      return handleInitialize(data.data);
+    }
+    
+    return ContentService
+      .createTextOutput(JSON.stringify({success: false, error: 'Unknown action'}))
+      .setMimeType(ContentService.MimeType.JSON);
+      
+  } catch (error) {
+    Logger.log('Error: ' + error.toString());
+    return ContentService
+      .createTextOutput(JSON.stringify({success: false, error: error.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleSync(incomingData) {
+  // Get existing data from Drive file
+  const existingData = getStoredData();
+  
+  // Find what's NEW from the server perspective BEFORE handling deletions
+  // This way we capture the true server state before any modifications
+  const serverNewItems = getItemsNotInIncoming(existingData, incomingData);
+  
+  // Handle deletions AFTER we've identified what to send back
+  let processedExistingData = existingData;
+  if (incomingData.deletedNotes || incomingData.deletedAuthorNotes || incomingData.deletedLabels) {
+    processedExistingData = handleDeletions(existingData, incomingData);
+  }
+  
+  // Merge data
+  const mergedData = mergeData(processedExistingData, incomingData);
+  
+  // Store merged data to Drive file
+  storeData(mergedData);
+  
+  // Only send back items that are new to this client
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      success: true,
+      data: serverNewItems
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function handleDeletions(existingData, incomingData) {
+  try {
+    Logger.log('=== DELETION DEBUG ===');
+    Logger.log('Existing labels before deletion: ' + existingData.labels);
+    Logger.log('Deleted labels: ' + JSON.stringify(incomingData.deletedLabels));
+    
+    const processedData = {...existingData};
+    
+    // Handle deleted labels
+    if (incomingData.deletedLabels && incomingData.deletedLabels.length > 0) {
+      const existingLabels = JSON.parse(processedData.labels || '{}');
+      Logger.log('Parsed existing labels count: ' + Object.keys(existingLabels).length);
+      
+      incomingData.deletedLabels.forEach(deletedId => {
+        if (existingLabels.hasOwnProperty(deletedId)) {
+          delete existingLabels[deletedId];
+          Logger.log('Successfully deleted label: ' + deletedId);
+        } else {
+          Logger.log('Label not found for deletion: ' + deletedId);
+        }
+      });
+      
+      processedData.labels = JSON.stringify(existingLabels);
+      Logger.log('Labels after deletion: ' + processedData.labels);
+    }
+    
+    // Handle deleted notes
+    if (incomingData.deletedNotes && incomingData.deletedNotes.length > 0) {
+      const existingNotes = JSON.parse(processedData.notes || '{}');
+      
+      incomingData.deletedNotes.forEach(deletedId => {
+        if (existingNotes.hasOwnProperty(deletedId)) {
+          delete existingNotes[deletedId];
+          Logger.log('Successfully deleted note: ' + deletedId);
+        } else {
+          Logger.log('Note not found for deletion: ' + deletedId);
+        }
+      });
+      
+      processedData.notes = JSON.stringify(existingNotes);
+    }
+    
+    // Handle deleted author notes
+    if (incomingData.deletedAuthorNotes && incomingData.deletedAuthorNotes.length > 0) {
+      const existingAuthorNotes = JSON.parse(processedData.authorNotes || '{}');
+      
+      incomingData.deletedAuthorNotes.forEach(deletedId => {
+        if (existingAuthorNotes.hasOwnProperty(deletedId)) {
+          delete existingAuthorNotes[deletedId];
+          Logger.log('Successfully deleted author note: ' + deletedId);
+        } else {
+          Logger.log('Author note not found for deletion: ' + deletedId);
+        }
+      });
+      
+      processedData.authorNotes = JSON.stringify(existingAuthorNotes);
+    }
+    
+    Logger.log('=== END DELETION DEBUG ===');
+    return processedData;
+  } catch (error) {
+    Logger.log('Error handling deletions: ' + error.toString());
+    return existingData; // Return original data if deletion processing fails
+  }
+}
+
+function handleInitialize(incomingData) {
+  // Store initial data
+  storeData(incomingData);
+  
+  return ContentService
+    .createTextOutput(JSON.stringify({success: true}))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getStoredData() {
+  const fileName = 'AO3_Sync_Data.json';
+  
+  try {
+    const file = getOrCreateDataFile(fileName);
+    const content = file.getBlob().getDataAsString();
+    
+    if (!content || content.trim() === '') {
+      Logger.log('File is empty, returning default data');
+      return getDefaultData();
+    }
+    
+    const data = JSON.parse(content);
+    Logger.log('Data loaded from Drive file successfully');
+    Logger.log('File size: ' + content.length + ' characters');
+    
+    return {
+      labels: data.labels || '{}',
+      notes: data.notes || '{}',
+      authorNotes: data.authorNotes || '{}',
+      timestamp: data.timestamp || Date.now()
+    };
+    
+  } catch (error) {
+    Logger.log('Error reading data from Drive: ' + error.toString());
+    Logger.log('Returning default data');
+    return getDefaultData();
+  }
+}
+
+function storeData(data) {
+  const fileName = 'AO3_Sync_Data.json';
+  
+  try {
+    // Check file size limit (10MB for Apps Script)
+    const jsonContent = JSON.stringify({
+      ...data,
+      lastUpdated: new Date().toISOString(),
+      timestamp: data.timestamp || Date.now()
+    }, null, 2);
+    
+    if (jsonContent.length > 10 * 1024 * 1024) {
+      throw new Error('Data exceeds 10MB limit');
+    }
+    
+    // Get or create the file
+    const file = getOrCreateDataFile(fileName);
+    
+    // Save data
+    file.setContent(jsonContent);
+    
+    Logger.log('Data saved to Drive file successfully');
+    Logger.log('File size: ' + jsonContent.length + ' characters');
+    
+  } catch (error) {
+    Logger.log('Error storing data to Drive: ' + error.toString());
+    throw error; // Re-throw so sync can handle the error
+  }
+}
+
+function mergeData(existing, incoming) {
+  try {
+    // Parse JSON strings
+    const existingLabels = JSON.parse(existing.labels || '{}');
+    const incomingLabels = JSON.parse(incoming.labels || '{}');
+    
+    const existingNotes = JSON.parse(existing.notes || '{}');
+    const incomingNotes = JSON.parse(incoming.notes || '{}');
+    
+    const existingAuthorNotes = JSON.parse(existing.authorNotes || '{}');
+    const incomingAuthorNotes = JSON.parse(incoming.authorNotes || '{}');
+    
+    // Merge labels with deletion awareness
+    const mergedLabels = mergeLabelsWithDeletionAwareness(existingLabels, incomingLabels, incoming.deletedLabels || []);
+    
+    // Merge notes - but don't restore anything that was deleted
+    const mergedNotes = mergeNotesWithDeletionAwareness(existingNotes, incomingNotes, incoming.deletedNotes || []);
+    const mergedAuthorNotes = mergeNotesWithDeletionAwareness(existingAuthorNotes, incomingAuthorNotes, incoming.deletedAuthorNotes || []);
+    
+    return {
+      labels: JSON.stringify(mergedLabels),
+      notes: JSON.stringify(mergedNotes),
+      authorNotes: JSON.stringify(mergedAuthorNotes),
+      timestamp: Math.max(existing.timestamp || 0, incoming.timestamp || 0, Date.now())
+    };
+  } catch (error) {
+    Logger.log('Error merging data: ' + error.toString());
+    return incoming; // Fallback to incoming data
+  }
+}
+
+function mergeLabelsWithDeletionAwareness(existing, incoming, deletedIds) {
+  const merged = {...existing};
+  
+  // Add/update incoming labels (but skip any that were deleted in this sync)
+  Object.keys(incoming).forEach(id => {
+    // Skip if this ID was marked for deletion in this sync
+    if (deletedIds.includes(id)) {
+      Logger.log('Skipping merge for deleted label ID: ' + id);
+      return;
+    }
+    
+    // For labels, incoming always overwrites existing (no timestamp comparison needed)
+    merged[id] = incoming[id];
+  });
+  
+  return merged;
+}
+
+function mergeNotesWithDeletionAwareness(existing, incoming, deletedIds) {
+  const merged = {...existing};
+  
+  Object.keys(incoming).forEach(id => {
+    // Skip if this ID was marked for deletion in this sync
+    if (deletedIds.includes(id)) {
+      Logger.log('Skipping merge for deleted ID: ' + id);
+      return;
+    }
+    
+    const existingNote = existing[id];
+    const incomingNote = incoming[id];
+    
+    if (!existingNote || 
+        (incomingNote.date && existingNote.date && 
+         new Date(incomingNote.date) > new Date(existingNote.date))) {
+      merged[id] = incomingNote;
+    }
+  });
+  
+  return merged;
+}
+
+function doGet(e) {
+  return ContentService
+    .createTextOutput(JSON.stringify({
+      message: 'AO3 Sync Script is running',
+      timestamp: new Date().toISOString()
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getOrCreateDataFile(fileName) {
+  // Try to find existing file in root Drive
+  const files = DriveApp.getFilesByName(fileName);
+  
+  if (files.hasNext()) {
+    const file = files.next();
+    Logger.log('Using existing file: ' + file.getId());
+    return file;
+  } else {
+    // Create new file with default data
+    const defaultData = getDefaultData();
+    const initialContent = JSON.stringify({
+      ...defaultData,
+      created: new Date().toISOString(),
+      lastUpdated: new Date().toISOString()
+    }, null, 2);
+    
+    const newFile = DriveApp.createFile(fileName, initialContent, 'application/json');
+    Logger.log('Created new file: ' + newFile.getId());
+    Logger.log('File URL: ' + newFile.getUrl());
+    return newFile;
+  }
+}
+
+function getDefaultData() {
+  return {
+    labels: '{}',
+    notes: '{}',
+    authorNotes: '{}',
+    timestamp: Date.now()
+  };
+}
+
+function getDataStats() {
+  const fileName = 'AO3_Sync_Data.json';
+  
+  try {
+    const file = getOrCreateDataFile(fileName);
+    const content = file.getBlob().getDataAsString();
+    const data = JSON.parse(content);
+    
+    Logger.log('=== DATA FILE STATISTICS ===');
+    Logger.log('File Size: ' + Math.round(content.length / 1024) + ' KB');
+    Logger.log('Labels: ' + Object.keys(JSON.parse(data.labels || '{}')).length);
+    Logger.log('Story Notes: ' + Object.keys(JSON.parse(data.notes || '{}')).length);
+    Logger.log('Author Notes: ' + Object.keys(JSON.parse(data.authorNotes || '{}')).length);
+    Logger.log('File URL: ' + file.getUrl());
+    
+  } catch (error) {
+    Logger.log('Error getting stats: ' + error.toString());
+  }
+}
+
+function getItemsNotInIncoming(serverData, incomingData) {
+  Logger.log('=== DEBUG getItemsNotInIncoming ===');
+  
+  const newToClient = {};
+  
+  // Handle labels
+  const serverLabels = JSON.parse(serverData.labels || '{}');
+  const incomingLabels = JSON.parse(incomingData.labels || '{}');
+  const deletedLabels = incomingData.deletedLabels || [];
+  
+  const newLabels = {};
+  Object.keys(serverLabels).forEach(id => {
+    // Don't send back items that are being deleted in this sync
+    if (!incomingLabels.hasOwnProperty(id) && !deletedLabels.includes(id)) {
+      Logger.log('Found server label not in incoming (and not deleted): ' + id + ' -> ' + serverLabels[id]);
+      newLabels[id] = serverLabels[id];
+    } else if (deletedLabels.includes(id)) {
+      Logger.log('Skipping deleted label: ' + id);
+    }
+  });
+  
+  if (Object.keys(newLabels).length > 0) {
+    Logger.log('New labels to send back: ' + JSON.stringify(newLabels));
+    newToClient.labels = JSON.stringify(newLabels);
+  } else {
+    Logger.log('No new labels to send back');
+  }
+  
+  // Handle notes
+  const serverNotes = JSON.parse(serverData.notes || '{}');
+  const incomingNotes = JSON.parse(incomingData.notes || '{}');
+  const deletedNotes = incomingData.deletedNotes || [];
+  
+  const newNotes = {};
+  Object.keys(serverNotes).forEach(id => {
+    if (!incomingNotes.hasOwnProperty(id) && !deletedNotes.includes(id)) {
+      Logger.log('Found server note not in incoming (and not deleted): ' + id);
+      newNotes[id] = serverNotes[id];
+    }
+  });
+  
+  if (Object.keys(newNotes).length > 0) {
+    Logger.log('New notes to send back: ' + Object.keys(newNotes).length);
+    newToClient.notes = JSON.stringify(newNotes);
+  }
+  
+  // Handle author notes
+  const serverAuthorNotes = JSON.parse(serverData.authorNotes || '{}');
+  const incomingAuthorNotes = JSON.parse(incomingData.authorNotes || '{}');
+  const deletedAuthorNotes = incomingData.deletedAuthorNotes || [];
+  
+  const newAuthorNotes = {};
+  Object.keys(serverAuthorNotes).forEach(id => {
+    if (!incomingAuthorNotes.hasOwnProperty(id) && !deletedAuthorNotes.includes(id)) {
+      Logger.log('Found server author note not in incoming (and not deleted): ' + id);
+      newAuthorNotes[id] = serverAuthorNotes[id];
+    }
+  });
+  
+  if (Object.keys(newAuthorNotes).length > 0) {
+    Logger.log('New author notes to send back: ' + Object.keys(newAuthorNotes).length);
+    newToClient.authorNotes = JSON.stringify(newAuthorNotes);
+  }
+  
+  Logger.log('Total new items to client: ' + Object.keys(newToClient).length);
+  Logger.log('=== END DEBUG ===');
+  
+  return Object.keys(newToClient).length > 0 ? newToClient : null;
+}
+
+function forceReset() {
+  const fileName = 'AO3_Sync_Data.json';
+  
+  // Delete the existing file
+  const files = DriveApp.getFilesByName(fileName);
+  while (files.hasNext()) {
+    const file = files.next();
+    Logger.log('Deleting file: ' + file.getId());
+    DriveApp.removeFile(file);
+  }
+  
+  Logger.log('Server storage reset complete');
+}
