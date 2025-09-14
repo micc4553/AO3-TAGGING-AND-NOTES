@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AO3 Tagging and Notes
-// @version      5.4.1
+// @version      5.5.1
 // @description  Tag AO3 works with Google sync for cross-device data
 // @match        https://archiveofourown.org/*
 // @icon         https://archiveofourown.org/favicon.ico
@@ -17,7 +17,11 @@
   const LAST_SYNCED_NOTES_KEY = 'ao3_last_synced_notes';
 const LAST_SYNCED_AUTHOR_NOTES_KEY = 'ao3_last_synced_author_notes';
 const LAST_SYNCED_LABELS_KEY = 'ao3_last_synced_labels';
-const DELETED_LABELS_KEY = 'ao3_deleted_labels';
+  const STORAGE_KEY = 'ao3_fic_labels';
+const NOTES_KEY = 'ao3_fic_notes';
+const AUTHOR_NOTES_KEY = 'ao3_author_notes';
+const SETTINGS_KEY = 'ao3_sync_settings';
+  const DELETED_LABELS_KEY = 'ao3_deleted_labels';
 const DELETED_NOTES_KEY = 'ao3_deleted_notes';
 const DELETED_AUTHOR_NOTES_KEY = 'ao3_deleted_author_notes';
 
@@ -297,18 +301,23 @@ async performSync() {
     console.log('[AO3 Sync] DEBUG - Current labels count:', Object.keys(currentLabelsObj).length);
     console.log('[AO3 Sync] DEBUG - Deleted labels:', deletedLabels);
 
-    const syncData = {
-      action: 'sync',
-      data: {
-        labels: currentLabels,
-        notes: currentNotes,
-        authorNotes: currentAuthorNotes,
-        deletedNotes: deletedNotes,
-        deletedAuthorNotes: deletedAuthorNotes,
-        deletedLabels: deletedLabels,
-        timestamp: Date.now()
-      }
-    };
+// Convert deletion objects to arrays of IDs (what Apps Script expects)
+const deletedLabelsArray = Object.keys(loadDeletedLabels());
+const deletedNotesArray = Object.keys(loadDeletedNotes());
+const deletedAuthorNotesArray = Object.keys(loadDeletedAuthorNotes());
+
+const syncData = {
+  action: 'sync',
+  data: {
+    labels: currentLabels,
+    notes: currentNotes,
+    authorNotes: currentAuthorNotes,
+    deletedNotes: deletedNotesArray,
+    deletedAuthorNotes: deletedAuthorNotesArray,
+    deletedLabels: deletedLabelsArray,
+    timestamp: Date.now()
+  }
+};
 
     const response = await this.sendRequest(syncData);
 
@@ -457,6 +466,59 @@ mergeData(serverData) {
   }
 }
 
+  if (serverData.notes) {
+    const serverNotes = JSON.parse(serverData.notes);
+    const mergedNotes = {...currentNotes};
+
+    Object.keys(serverNotes).forEach(id => {
+      // Don't add back items that were just deleted locally
+      if (recentlyDeletedNotes.includes(id)) {
+        console.log(`[AO3 Sync] Skipping recently deleted note: ${id}`);
+        return;
+      }
+
+      const local = currentNotes[id];
+      const server = serverNotes[id];
+
+      if (!local) {
+        console.log(`[AO3 Sync] Adding new note from server: ${id}`);
+        mergedNotes[id] = server;
+      } else if (local.date && server.date && new Date(server.date) > new Date(local.date)) {
+        console.log(`[AO3 Sync] Updating note with newer server version: ${id}`);
+        mergedNotes[id] = server;
+      }
+    });
+
+    localStorage.setItem(NOTES_KEY, JSON.stringify(mergedNotes));
+  }
+
+  if (serverData.authorNotes) {
+    const serverAuthorNotes = JSON.parse(serverData.authorNotes);
+    const mergedAuthorNotes = {...currentAuthorNotes};
+
+    Object.keys(serverAuthorNotes).forEach(id => {
+      // Don't add back items that were just deleted locally
+      if (recentlyDeletedAuthorNotes.includes(id)) {
+        console.log(`[AO3 Sync] Skipping recently deleted author note: ${id}`);
+        return;
+      }
+
+      const local = currentAuthorNotes[id];
+      const server = serverAuthorNotes[id];
+
+      if (!local) {
+        console.log(`[AO3 Sync] Adding new author note from server: ${id}`);
+        mergedAuthorNotes[id] = server;
+      } else if (local.date && server.date && new Date(server.date) > new Date(local.date)) {
+        console.log(`[AO3 Sync] Updating author note with newer server version: ${id}`);
+        mergedAuthorNotes[id] = server;
+      }
+    });
+
+    localStorage.setItem(AUTHOR_NOTES_KEY, JSON.stringify(mergedAuthorNotes));
+  }
+}
+
 async initializeStorage() {
   if (!this.settings.sheetUrl) {
     alert('Please set the Deployment URL first');
@@ -542,9 +604,10 @@ const saveDeletedAuthorNotes = v => saveJSON(DELETED_AUTHOR_NOTES_KEY, v);
   <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#232136CC;color:#fff;border:2px solid #ddd;border-radius:8px;padding:20px;z-index:100000;max-width:500px;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
     <h3 style="margin-top:0;color:#fff;">Sync Settings</h3>
     <div style="margin:10px 0;">
-      <button id="cleanup-storage" style="padding:8px 16px;background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;">Clean Up Storage</button>
-      <button id="deep-cleanup-storage" style="padding:8px 16px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;margin-left:8px;">Deep Clean (Validate)</button>
-    </div>
+  <button id="cleanup-storage" style="padding:8px 16px;background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;">Clean Up Storage</button>
+  <button id="deep-cleanup-storage" style="padding:8px 16px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;margin-left:8px;">Deep Clean (Validate)</button>
+  <button id="clear-deletion-history" style="padding:8px 16px;background:#9c27b0;color:white;border:none;border-radius:4px;cursor:pointer;margin-left:8px;">Clear Deletion History</button>
+</div>
   <h3 style="margin-top:0;color:#fff;">Sync Settings</h3>
         <div style="margin:10px 0;">
           <label style="color:#fff;">
@@ -589,6 +652,30 @@ panel.querySelector('#deep-cleanup-storage')?.addEventListener('click', async ()
   const result = await deepCleanupWithValidation();
   alert(`Deep cleanup complete!\nValidated: ${result.validated} works\nRemoved: ${result.removed} invalid works`);
 });
+
+    panel.querySelector('#clear-deletion-history')?.addEventListener('click', () => {
+  const deletedLabels = loadDeletedLabels();
+  const deletedNotes = loadDeletedNotes();
+  const deletedAuthorNotes = loadDeletedAuthorNotes();
+
+  const totalDeleted = Object.keys(deletedLabels).length + Object.keys(deletedNotes).length + Object.keys(deletedAuthorNotes).length;
+
+  if (totalDeleted === 0) {
+    alert('No deletion history to clear.');
+    return;
+  }
+
+  if (!confirm(`Clear deletion history for ${totalDeleted} items? This will allow previously deleted items to potentially sync back from other devices.`)) {
+    return;
+  }
+
+  localStorage.removeItem(DELETED_LABELS_KEY);
+  localStorage.removeItem(DELETED_NOTES_KEY);
+  localStorage.removeItem(DELETED_AUTHOR_NOTES_KEY);
+
+  alert(`Cleared deletion history for ${totalDeleted} items.`);
+});
+
     panel.querySelector('#save-sync-settings').addEventListener('click', () => {
   const newSettings = {
     ...settings,
@@ -1388,15 +1475,15 @@ b.addEventListener('click',e=>{
   let cur=labels[id]||'';
 
 if(cur===tag){
-    console.log(`[AO3] Removing tag "${tag}" from work ID "${id}"`);
-    delete labels[id];
+  console.log(`[AO3] Removing tag "${tag}" from work ID "${id}"`);
+  delete labels[id];
 
-    // Track this deletion permanently
-    const deletedLabels = loadDeletedLabels();
-    deletedLabels[id] = { tag: tag, deletedAt: Date.now() };
-    saveDeletedLabels(deletedLabels);
+  // Track this deletion permanently
+  const deletedLabels = loadDeletedLabels();
+  deletedLabels[id] = { tag: tag, deletedAt: Date.now() };
+  saveDeletedLabels(deletedLabels);
 
-    cur='';
+  cur='';
     if(ref.span){
       ref.span.remove();
       ref.span=null;
@@ -1678,4 +1765,3 @@ mo.observe(document.querySelector('#main') || document.body, {
   }
   init();
 })();
-
