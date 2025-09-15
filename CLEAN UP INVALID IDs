@@ -13,3 +13,42 @@
     localStorage.setItem("ao3_fic_labels", JSON.stringify(validLabels));
     console.log(`Removed ${removed} invalid IDs`);
 })();
+
+
+
+
+CLEAN UP ALL STORAGE ITEMS. CLEAN SLATE
+
+
+localStorage.removeItem("ao3_fic_labels");
+localStorage.removeItem("ao3_fic_notes");
+localStorage.removeItem("ao3_author_notes");
+localStorage.removeItem("ao3_deleted_labels");
+localStorage.removeItem("ao3_deleted_notes");
+localStorage.removeItem("ao3_deleted_author_notes");
+localStorage.removeItem("ao3_downloaded_works");
+localStorage.removeItem("ao3_tag_dates");
+localStorage.removeItem("ao3_last_synced_labels");
+localStorage.removeItem("ao3_last_synced_notes");
+localStorage.removeItem("ao3_last_synced_author_notes");
+
+console.log("✅ AO3 userscript storage fully cleared!");
+
+
+[
+  "ao3_last_synced_labels",
+  "ao3_last_synced_author_notes",
+  "ao3_last_sync",
+  "ao3_sync_settings",
+  "ao3_last_synced_notes"
+].forEach(key => {
+  localStorage.removeItem(key);
+  console.log(`Removed: ${key}`);
+});
+
+console.log("✅ All AO3 userscript data and sync settings cleared!");
+
+
+check:
+
+Object.keys(localStorage).filter(k => k.startsWith("ao3_"));
