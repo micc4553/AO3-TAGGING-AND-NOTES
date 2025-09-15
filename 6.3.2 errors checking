@@ -1,0 +1,2762 @@
+// ==UserScript==
+// @name         AO3 Tagging and Notes
+// @version      5.4.3
+// @description  Tag AO3 works with Google sync for cross-device data
+// @match        https://archiveofourown.org/*
+// @icon         https://archiveofourown.org/favicon.ico
+// @grant        GM_xmlhttpRequest
+// ==/UserScript==
+
+(function () {
+    "use strict";
+    const STORAGE_KEY = "ao3_fic_labels";
+    const NOTES_KEY = "ao3_fic_notes";
+    const AUTHOR_NOTES_KEY = "ao3_author_notes";
+    const SETTINGS_KEY = "ao3_sync_settings";
+    const LAST_SYNC_KEY = "ao3_last_sync";
+    const LAST_SYNCED_NOTES_KEY = "ao3_last_synced_notes";
+    const LAST_SYNCED_AUTHOR_NOTES_KEY = "ao3_last_synced_author_notes";
+    const LAST_SYNCED_LABELS_KEY = "ao3_last_synced_labels";
+    const DELETED_LABELS_KEY = "ao3_deleted_labels";
+    const DELETED_NOTES_KEY = "ao3_deleted_notes";
+    const DELETED_AUTHOR_NOTES_KEY = "ao3_deleted_author_notes";
+const LAST_DOWNLOAD_KEY = "ao3_last_download";
+const DOWNLOADED_WORKS_KEY = "ao3_downloaded_works";
+  const TAG_DATES_KEY = "ao3_tag_dates";
+
+
+    const PRESET_TAGS = [
+        "Finished",
+        "To Read",
+        "Not Interested",
+        "Dropped",
+        "Disliked",
+        "Favourite",
+        "Dish",
+    ];
+    const COLLAPSE_TAGS = ["Finished", "Not Interested", "Dropped", "Disliked"];
+    const BORDER_TAGS = ["To Read", "Favourite", "Dish"];
+    const TAG_COLORS = {
+        Finished: { bg: "#8b7db8", text: "#fff" },
+        "To Read": { bg: "#6b8a7a", text: "#fff" },
+        "Not Interested": { bg: "#6e6a86", text: "#fff" },
+        Dropped: { bg: "#7a9bb8", text: "#fff" },
+        Disliked: { bg: "#8b7355", text: "#fff" },
+        Favourite: { bg: "#d6a5c9", text: "#fff" },
+        Dish: { bg: "#a85c6b", text: "#fff" },
+    };
+
+    // Load sync settings
+    const loadSyncSettings = () => {
+        try {
+            return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+        } catch {
+            return {};
+        }
+    };
+
+    const saveSyncSettings = (settings) => {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    };
+
+  // Mass Download Manager
+class MassDownloadManager {
+    constructor() {
+        this.isDownloading = false;
+        this.downloadQueue = [];
+        this.downloadedCount = 0;
+        this.totalCount = 0;
+        this.failedDownloads = [];
+        this.progressModal = null;
+      this.currentTag = null;
+    }
+
+async downloadTaggedWorks(tag) {
+    if (this.isDownloading) {
+        alert('Download already in progress!');
+        return;
+    }
+
+    const labels = loadLabels();
+    const taggedIds = Object.keys(labels).filter(id => labels[id] === tag);
+    console.log('Tagged IDs found:', taggedIds);
+
+    if (taggedIds.length === 0) {
+        alert(`No fics tagged as "${tag}" found!`);
+        return;
+    }
+
+    // Get last download time and show selection modal
+    const lastDownload = getLastDownloadTime(tag);
+    const selectedIds = await this.showSelectionModal(tag, taggedIds, lastDownload);
+
+    if (!selectedIds || selectedIds.length === 0) {
+        return; // User cancelled or selected nothing
+    }
+
+    this.isDownloading = true;
+    this.downloadQueue = selectedIds.slice();
+    this.downloadedCount = 0;
+    this.totalCount = selectedIds.length;
+    this.failedDownloads = [];
+    this.currentTag = tag;
+
+    this.showProgressModal();
+    await this.processDownloadQueue();
+}
+
+    showProgressModal() {
+        if (this.progressModal) return;
+
+        this.progressModal = document.createElement('div');
+        this.progressModal.innerHTML = `
+            <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:100000;display:flex;align-items:center;justify-content:center;">
+                <div style="background:#232136CC;color:#fff;padding:30px;border-radius:8px;max-width:500px;width:90%;border:2px solid #d6a5c9;">
+                    <h3 style="margin:0 0 20px 0;text-align:center;color:#d6a5c9;">📚 Downloading Tagged Works</h3>
+                    <div style="margin:15px 0;">
+                        <div style="background:#44415a;border-radius:10px;overflow:hidden;height:20px;position:relative;">
+                            <div id="download-progress" style="background:linear-gradient(90deg, #d6a5c9, #e8c8dc);height:100%;width:0%;transition:width 0.3s;"></div>
+                            <div style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;color:#000;">
+                                <span id="progress-text">0 / ${this.totalCount}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="current-download" style="text-align:center;margin:10px 0;font-size:14px;color:#ccc;">Preparing download...</div>
+                    <div style="text-align:center;margin-top:20px;">
+                        <button id="cancel-download" style="background:#f44336;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(this.progressModal);
+        document.getElementById('cancel-download').addEventListener('click', () => {
+            this.isDownloading = false;
+            this.progressModal.remove();
+            this.progressModal = null;
+        });
+    }
+
+async processDownloadQueue() {
+        console.log('Starting download queue processing. Queue length:', this.downloadQueue.length); // ADD THIS
+        while (this.downloadQueue.length > 0 && this.isDownloading) {
+            const ficId = this.downloadQueue.shift();
+
+            document.getElementById('current-download').textContent = `Downloading: ${ficId}`;
+
+          try {
+               await this.addFicToDownloads(ficId);
+               this.downloadedCount++;
+               console.log(`Successfully downloaded ${ficId}`);
+           } catch (error) {
+               console.error(`Failed to download ${ficId}:`, error);
+               this.failedDownloads.push({ id: ficId, error: error.message });
+               this.downloadedCount++; // still count failed downloads for progress
+           }
+
+            const percentage = (this.downloadedCount / this.totalCount) * 100;
+            document.getElementById('download-progress').style.width = `${percentage}%`;
+            document.getElementById('progress-text').textContent = `${this.downloadedCount} / ${this.totalCount}`;
+
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+
+console.log('Download queue finished. isDownloading:', this.isDownloading); // ADD THIS
+        if (this.isDownloading) {
+            console.log('Calling finalizeZip()'); // ADD THIS
+await this.finalizeDownloads();
+        } else {
+            console.log('Not calling finalizeZip because isDownloading is false'); // ADD THIS
+        }
+    }
+
+async addFicToDownloads(ficId) {
+    const workId = ficId.startsWith('bookmark_')
+        ? ficId.replace('bookmark_', '').replace(/^.*?(\d+).*$/, '$1')
+        : ficId.match(/\d+/)?.[0];
+
+    const metadata = await this.fetchWorkMetadata(workId);
+    const htmlContent = await this.fetchWorkContent(workId);
+
+    const cleanTitle = metadata.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').substring(0, 100);
+    const cleanAuthor = metadata.author.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').substring(0, 50);
+    const filename = `${cleanAuthor} - ${cleanTitle} (${workId}).html`;
+
+    // Download immediately
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
+}
+
+    async fetchWorkContent(workId) {
+        const downloadUrl = `https://download.archiveofourown.org/downloads/${workId}/work_${workId}.html`;
+
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: downloadUrl,
+                timeout: 30000,
+                onload: (response) => {
+    console.log('Fetch response status:', response.status); // ADD THIS
+    if (response.status === 200) {
+        console.log('Content length:', response.responseText.length); // ADD THIS
+        resolve(response.responseText);
+    } else {
+        reject(new Error(`HTTP ${response.status}`));
+    }
+},
+                onerror: () => reject(new Error('Network error')),
+                ontimeout: () => reject(new Error('Request timeout'))
+            });
+        });
+    }
+
+    fetchWorkMetadata(workId) {
+        return new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `https://archiveofourown.org/works/${workId}`,
+                timeout: 15000,
+                onload: (response) => {
+                    if (response.status === 200) {
+                        try {
+                            const parser = new DOMParser();
+                            const doc = parser.parseFromString(response.responseText, 'text/html');
+
+                            const titleEl = doc.querySelector('h2.title');
+                            const authorEl = doc.querySelector('a[rel="author"]');
+
+                            const title = titleEl ? titleEl.textContent.trim() : `Work_${workId}`;
+                            const author = authorEl ? authorEl.textContent.trim() : 'Unknown_Author';
+
+                            resolve({ title, author });
+                        } catch (error) {
+                            resolve({ title: `Work_${workId}`, author: 'Unknown_Author' });
+                        }
+                    } else {
+                        resolve({ title: `Work_${workId}`, author: 'Unknown_Author' });
+                    }
+                },
+                onerror: () => resolve({ title: `Work_${workId}`, author: 'Unknown_Author' }),
+                ontimeout: () => resolve({ title: `Work_${workId}`, author: 'Unknown_Author' })
+            });
+        });
+    }
+
+async finalizeDownloads() {
+    // Track that we downloaded this tag
+    if (this.currentTag) {
+        setLastDownloadTime(this.currentTag, Date.now());
+    }
+
+    this.progressModal?.remove();
+    this.progressModal = null;
+    this.isDownloading = false;
+
+    let message = `Individual downloads complete!\n\nSuccessfully downloaded: ${this.downloadedCount - this.failedDownloads.length} fics`;
+    if (this.failedDownloads.length > 0) {
+        message += `\nFailed: ${this.failedDownloads.length} fics`;
+    }
+    alert(message);
+}
+
+  async showSelectionModal(tag, allIds, lastDownloadTime) {
+    return new Promise((resolve) => {
+        const modal = document.createElement('div');
+        modal.innerHTML = `
+            <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:100000;display:flex;align-items:center;justify-content:center;">
+                <div style="background:#232136CC;color:#fff;padding:20px;border-radius:8px;max-width:700px;width:90%;max-height:80vh;border:2px solid #d6a5c9;display:flex;flex-direction:column;">
+                    <h3 style="margin:0 0 15px 0;text-align:center;color:#d6a5c9;">Select Works to Download</h3>
+                    <div style="margin-bottom:15px;text-align:center;color:#ccc;font-size:0.9em;">
+                        ${lastDownloadTime ? `Last downloaded: ${new Date(lastDownloadTime).toLocaleDateString()} ${new Date(lastDownloadTime).toLocaleTimeString()}` : 'First time downloading this tag'}
+                    </div>
+                    <div style="margin-bottom:15px;display:flex;gap:10px;justify-content:center;">
+                        <button id="select-new" style="background:#4CAF50;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;">Select New Only</button>
+                        <button id="select-all" style="background:#2196F3;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;">Select All</button>
+                        <button id="select-none" style="background:#666;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;">Select None</button>
+                    </div>
+                    <div style="flex:1;overflow-y:auto;border:1px solid #555;border-radius:4px;padding:10px;max-height:400px;" id="works-list">
+                        <div style="text-align:center;color:#ccc;">Loading works...</div>
+                    </div>
+                    <div style="margin-top:15px;display:flex;gap:10px;justify-content:space-between;align-items:center;">
+                        <div style="color:#ccc;font-size:0.9em;">
+                            <span id="selected-count">0</span> of ${allIds.length} selected
+                        </div>
+                        <div>
+                            <button id="download-selected" style="background:#d6a5c9;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-right:8px;">Download Selected</button>
+                            <button id="cancel-selection" style="background:#f44336;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        // Load work details and create checkboxes
+        this.populateSelectionModal(modal, allIds, lastDownloadTime, resolve);
+    });
+}
+  async populateSelectionModal(modal, allIds, lastDownloadTime, resolve) {
+    const worksList = modal.querySelector('#works-list');
+    const selectedCountEl = modal.querySelector('#selected-count');
+
+    // Get work details for all IDs
+    const worksData = [];
+    worksList.innerHTML = '<div style="text-align:center;color:#ccc;">Loading work details...</div>';
+
+    for (const ficId of allIds) {
+        const workId = ficId.startsWith('bookmark_')
+            ? ficId.replace('bookmark_', '').replace(/^.*?(\d+).*$/, '$1')
+            : ficId.match(/\d+/)?.[0];
+
+        const metadata = await this.fetchWorkMetadata(workId);
+
+        // Try to get when this work was last updated (we'll use current time as fallback)
+        // In a real implementation, you might want to fetch this from AO3 or track it
+        const workData = {
+            ficId,
+            workId,
+            title: metadata.title,
+            author: metadata.author,
+            isNew: !lastDownloadTime || Date.now() - lastDownloadTime < 30 * 24 * 60 * 60 * 1000 // Assume new if within 30 days
+        };
+        worksData.push(workData);
+    }
+
+    // Sort by title for better organization
+    worksData.sort((a, b) => a.title.localeCompare(b.title));
+
+    // Create the works list HTML
+    const worksHTML = worksData.map(work => `
+        <div style="display:flex;align-items:center;padding:8px;margin:4px 0;background:#44415a40;border-radius:4px;border-left:3px solid ${work.isNew ? '#4CAF50' : '#666'};">
+            <input type="checkbox" id="work-${work.ficId}" data-fic-id="${work.ficId}" ${work.isNew ? 'checked' : ''} style="margin-right:10px;">
+            <div style="flex:1;">
+                <div style="font-weight:bold;color:#fff;">${work.title}</div>
+                <div style="font-size:0.85em;color:#ccc;">by ${work.author}</div>
+                ${work.isNew ? '<div style="font-size:0.75em;color:#4CAF50;">● New since last download</div>' : '<div style="font-size:0.75em;color:#999;">○ Previously available</div>'}
+            </div>
+        </div>
+    `).join('');
+
+    worksList.innerHTML = worksHTML;
+
+    // Update selected count
+    const updateSelectedCount = () => {
+        const checked = modal.querySelectorAll('input[type="checkbox"]:checked').length;
+        selectedCountEl.textContent = checked;
+    };
+
+    // Add event listeners to checkboxes
+    modal.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+        checkbox.addEventListener('change', updateSelectedCount);
+    });
+
+    // Button event listeners
+    modal.querySelector('#select-new').addEventListener('click', () => {
+        worksData.forEach(work => {
+            const checkbox = modal.querySelector(`#work-${work.ficId}`);
+            checkbox.checked = work.isNew;
+        });
+        updateSelectedCount();
+    });
+
+    modal.querySelector('#select-all').addEventListener('click', () => {
+        modal.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        updateSelectedCount();
+    });
+
+    modal.querySelector('#select-none').addEventListener('click', () => {
+        modal.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        updateSelectedCount();
+    });
+
+    modal.querySelector('#download-selected').addEventListener('click', () => {
+        const selectedIds = Array.from(modal.querySelectorAll('input[type="checkbox"]:checked'))
+            .map(cb => cb.dataset.ficId);
+        modal.remove();
+        resolve(selectedIds);
+    });
+
+    modal.querySelector('#cancel-selection').addEventListener('click', () => {
+        modal.remove();
+        resolve(null);
+    });
+
+    // Initial count update
+    updateSelectedCount();
+}
+
+}
+    // Google Sync Manager
+    class GoogleSyncManager {
+        constructor() {
+            this.settings = loadSyncSettings();
+            this.syncInterval = (this.settings.syncInterval || 60) * 1000;
+            this.syncTimer = null;
+            this.countdownTimer = null;
+            this.timeUntilNextSync = 0;
+            this.isSyncing = false;
+            this.isHovering = false;
+            this.initSync();
+        }
+
+        initSync() {
+            if (!this.settings.enabled || !this.settings.sheetUrl) return;
+            this.startSyncTimer();
+            if (this.settings.showWidget !== false) {
+                this.createSyncWidget();
+            }
+        }
+
+        createSyncWidget() {
+            if (document.getElementById("ao3-sync-widget")) return;
+
+            const mobile = window.innerWidth <= 768;
+            const widget = document.createElement("div");
+            widget.id = "ao3-sync-widget";
+            widget.style.cssText = `
+    position:fixed;
+    bottom:15px;
+    left:10px;
+    z-index:10000;
+    display:flex;
+    align-items:center;
+    opacity:${this.settings.syncWidgetOpacity || 0.5};
+    gap:${mobile ? "2px" : "4px"};
+    padding:${mobile ? "2px 3px" : "3px 5px"};
+    background:#fff;
+    border:1px solid #ddd;
+    border-radius:${mobile ? "10px" : "16px"};
+    cursor:pointer;
+    font:${
+        mobile ? "11px" : "12px"
+    } -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    color:#666;
+    box-shadow:0 2px 8px rgba(0,0,0,0.1);
+    transition:all 0.2s;
+    user-select:none;
+  `;
+
+            widget.innerHTML = `
+    <svg id="sync-icon" width="${mobile ? "12" : "14"}" height="${
+                mobile ? "12" : "14"
+            }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition:transform 0.3s">
+      <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+    </svg>
+    <span id="sync-status" style="font-weight:500;">Sync</span>
+    <span id="sync-countdown" style="font-size:${
+        mobile ? "10px" : "11px"
+    };color:#999;margin-left:${mobile ? "2px" : "4px"};">0s</span>
+  `;
+
+            document.body.appendChild(widget);
+
+            widget.addEventListener("click", () => {
+                if (!this.isSyncing) this.performSync();
+            });
+
+            widget.addEventListener("mouseenter", () => {
+                this.isHovering = true;
+                if (!this.isSyncing) {
+                    widget.style.opacity = "1";
+                    widget.style.background = "#f8f9fa";
+                    widget.style.borderColor = "#0066cc";
+                    widget.style.transform = "translateY(-1px)";
+                }
+            });
+
+            widget.addEventListener("mouseleave", () => {
+                this.isHovering = false;
+                if (!this.isSyncing) {
+                    widget.style.opacity =
+                        this.settings.syncWidgetOpacity || 0.5;
+                    widget.style.transform = "";
+                    widget.style.background = "#fff";
+                    widget.style.borderColor = "#ddd";
+                    widget.style.color = "#666";
+                    this.updateWidget();
+                }
+            });
+
+            this.updateWidget();
+            this.startCountdownTimer();
+        }
+
+        updateWidget(status = "idle") {
+            const widget = document.getElementById("ao3-sync-widget");
+            if (!widget) return;
+
+            const icon = widget.querySelector("#sync-icon");
+            const statusText = widget.querySelector("#sync-status");
+            const countdown = widget.querySelector("#sync-countdown");
+
+            let countdownText = "";
+            if (this.timeUntilNextSync > 0) {
+                if (this.timeUntilNextSync > 60) {
+                    const minutes = Math.floor(this.timeUntilNextSync / 60);
+                    const seconds = this.timeUntilNextSync % 60;
+                    countdownText = `${minutes}m ${seconds}s`;
+                } else {
+                    countdownText = `${this.timeUntilNextSync}s`;
+                }
+            } else {
+                countdownText = "now";
+            }
+
+            switch (status) {
+                case "syncing":
+                    if (!icon.dataset.rotating) {
+                        icon.dataset.rotating = "true";
+                        let rotation = 0;
+                        const rotateInterval = setInterval(() => {
+                            if (icon.dataset.rotating === "true") {
+                                rotation += 10;
+                                icon.style.transform = `rotate(${rotation}deg)`;
+                            } else {
+                                clearInterval(rotateInterval);
+                            }
+                        }, 30);
+                    }
+
+                    statusText.textContent = "Syncing...";
+                    if (countdown) countdown.textContent = "";
+                    widget.style.background = "#e3f2fd";
+                    widget.style.borderColor = "#2196f3";
+                    widget.style.color = "#1976d2";
+                    widget.style.opacity = "1";
+                    widget.style.transform = "";
+                    break;
+
+                case "success":
+                    icon.dataset.rotating = "false";
+                    icon.style.transform = "rotate(0deg)";
+
+                    statusText.textContent = "Synced!";
+                    if (countdown) countdown.textContent = "";
+                    if (!this.isHovering) {
+                        widget.style.background = "#e8f5e8";
+                        widget.style.borderColor = "#4caf50";
+                        widget.style.color = "#2e7d32";
+                        widget.style.opacity =
+                            this.settings.syncWidgetOpacity || 0.5;
+                    }
+                    setTimeout(() => this.updateWidget(), 3000);
+                    break;
+
+                case "error":
+                    icon.dataset.rotating = "false";
+                    icon.style.transform = "rotate(0deg)";
+
+                    statusText.textContent = "Error";
+                    if (countdown) countdown.textContent = "";
+                    if (!this.isHovering) {
+                        widget.style.background = "#ffebee";
+                        widget.style.borderColor = "#f44336";
+                        widget.style.color = "#c62828";
+                        widget.style.opacity =
+                            this.settings.syncWidgetOpacity || 0.5;
+                    }
+                    setTimeout(() => this.updateWidget(), 3000);
+                    break;
+
+                default:
+                    icon.dataset.rotating = "false";
+                    icon.style.transform = "rotate(0deg)";
+
+                    statusText.textContent = "Sync";
+                    if (countdown) countdown.textContent = countdownText;
+
+                    if (!this.isHovering) {
+                        widget.style.background = "#fff";
+                        widget.style.borderColor = "#ddd";
+                        widget.style.color = "#666";
+                        widget.style.opacity =
+                            this.settings.syncWidgetOpacity || 0.5;
+                        widget.style.transform = "";
+                    }
+                    break;
+            }
+        }
+
+        startCountdownTimer() {
+            if (this.countdownTimer) clearInterval(this.countdownTimer);
+            this.countdownTimer = setInterval(() => {
+                if (this.timeUntilNextSync > 0) {
+                    this.timeUntilNextSync--;
+                }
+                if (!this.isSyncing) {
+                    this.updateWidget();
+                }
+            }, 1000);
+        }
+
+        startSyncTimer() {
+            if (this.syncTimer) clearInterval(this.syncTimer);
+
+            const lastSync = parseInt(localStorage.getItem(LAST_SYNC_KEY)) || 0;
+            const timeSinceLastSync = Date.now() - lastSync;
+            const timeUntilNextSync = Math.max(
+                0,
+                this.syncInterval - timeSinceLastSync
+            );
+
+            this.timeUntilNextSync = Math.ceil(timeUntilNextSync / 1000);
+
+            if (timeUntilNextSync <= 0) {
+                this.performSync();
+                this.timeUntilNextSync = this.syncInterval / 1000;
+            }
+
+            this.syncTimer = setInterval(() => {
+                this.timeUntilNextSync = this.syncInterval / 1000;
+                this.performSync();
+            }, this.syncInterval);
+        }
+
+        stopSyncTimer() {
+            if (this.syncTimer) {
+                clearInterval(this.syncTimer);
+                this.syncTimer = null;
+            }
+            if (this.countdownTimer) {
+                clearInterval(this.countdownTimer);
+                this.countdownTimer = null;
+            }
+        }
+
+        async performSync() {
+            if (this.isSyncing || !this.settings.sheetUrl) return;
+
+            this.isSyncing = true;
+            this.updateWidget("syncing");
+
+            try {
+                const currentNotes = localStorage.getItem(NOTES_KEY) || "{}";
+                const currentAuthorNotes =
+                    localStorage.getItem(AUTHOR_NOTES_KEY) || "{}";
+                const currentLabels = localStorage.getItem(STORAGE_KEY) || "{}";
+
+                const lastSyncedNotes = JSON.parse(
+                    localStorage.getItem(LAST_SYNCED_NOTES_KEY) || "{}"
+                );
+                const lastSyncedAuthorNotes = JSON.parse(
+                    localStorage.getItem(LAST_SYNCED_AUTHOR_NOTES_KEY) || "{}"
+                );
+                const lastSyncedLabels = JSON.parse(
+                    localStorage.getItem(LAST_SYNCED_LABELS_KEY) || "{}"
+                );
+
+                const currentNotesObj = JSON.parse(currentNotes);
+                const currentAuthorNotesObj = JSON.parse(currentAuthorNotes);
+                const currentLabelsObj = JSON.parse(currentLabels);
+
+                const deletedNotes = Object.keys(lastSyncedNotes).filter(
+                    (id) => !currentNotesObj.hasOwnProperty(id)
+                );
+                const deletedAuthorNotes = Object.keys(
+                    lastSyncedAuthorNotes
+                ).filter((id) => !currentAuthorNotesObj.hasOwnProperty(id));
+                const deletedLabels = Object.keys(lastSyncedLabels).filter(
+                    (id) => !currentLabelsObj.hasOwnProperty(id)
+                );
+
+                console.log(
+                    "[AO3 Sync] DEBUG - Current labels count:",
+                    Object.keys(currentLabelsObj).length
+                );
+                console.log(
+                    "[AO3 Sync] DEBUG - Deleted labels:",
+                    deletedLabels
+                );
+
+                // Convert deletion objects to arrays of IDs (what Apps Script expects)
+                const deletedLabelsArray = Object.keys(loadDeletedLabels());
+                const deletedNotesArray = Object.keys(loadDeletedNotes());
+                const deletedAuthorNotesArray = Object.keys(
+                    loadDeletedAuthorNotes()
+                );
+
+                const syncData = {
+                    action: "sync",
+                    data: {
+                        labels: currentLabels,
+                        notes: currentNotes,
+                        authorNotes: currentAuthorNotes,
+                        deletedNotes: deletedNotesArray,
+                        deletedAuthorNotes: deletedAuthorNotesArray,
+                        deletedLabels: deletedLabelsArray,
+                        timestamp: Date.now(),
+                    },
+                };
+
+                const response = await this.sendRequest(syncData);
+
+                if (response.success) {
+                    console.log(
+                        "[AO3 Sync] Server response data:",
+                        response.data
+                    );
+
+                    // Only merge if server actually sent back new data
+                    if (response.data && response.data !== null) {
+                        console.log("[AO3 Sync] Merging data from server");
+                        this.mergeData(response.data);
+                    } else {
+                        console.log("[AO3 Sync] No new data from server");
+                    }
+
+                    localStorage.setItem(LAST_SYNCED_NOTES_KEY, currentNotes);
+                    localStorage.setItem(
+                        LAST_SYNCED_AUTHOR_NOTES_KEY,
+                        currentAuthorNotes
+                    );
+                    localStorage.setItem(LAST_SYNCED_LABELS_KEY, currentLabels);
+
+                    localStorage.setItem(LAST_SYNC_KEY, Date.now().toString());
+                    this.timeUntilNextSync = this.syncInterval / 1000;
+
+                    this.updateWidget("success");
+                    console.log("[AO3 Sync] Sync completed successfully");
+                } else {
+                    throw new Error(response.error || "Sync failed");
+                }
+            } catch (error) {
+                console.error("[AO3 Sync] Sync error:", error);
+                this.updateWidget("error");
+            } finally {
+                this.isSyncing = false;
+            }
+        }
+
+        sendRequest(data) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: "POST",
+                    url: this.settings.sheetUrl,
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    data: JSON.stringify(data),
+                    timeout: 15000,
+                    onload: (response) => {
+                        try {
+                            const result = JSON.parse(response.responseText);
+                            resolve(result);
+                        } catch (error) {
+                            reject(new Error("Invalid response"));
+                        }
+                    },
+                    onerror: (error) => {
+                        reject(new Error("Network error"));
+                    },
+                    ontimeout: () => {
+                        reject(new Error("Request timeout"));
+                    },
+                });
+            });
+        }
+
+        // Replace your existing mergeData function with this improved version
+mergeData(serverData) {
+    console.log("[AO3 Sync] DEBUG - Merging server data:", serverData);
+
+    const currentNotes = JSON.parse(localStorage.getItem(NOTES_KEY) || "{}");
+    const currentAuthorNotes = JSON.parse(localStorage.getItem(AUTHOR_NOTES_KEY) || "{}");
+    const currentLabels = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+
+    // Load our permanent deletion tracking
+    const deletedLabels = loadDeletedLabels();
+    const deletedNotes = loadDeletedNotes();
+    const deletedAuthorNotes = loadDeletedAuthorNotes();
+
+    if (serverData.labels) {
+        const serverLabels = JSON.parse(serverData.labels);
+        const mergedLabels = { ...currentLabels };
+        let invalidCount = 0;
+
+        Object.keys(serverLabels).forEach(id => {
+            // CRITICAL: Check invalid IDs FIRST before deletion check
+            if (!isValidWorkId(id)) {
+                console.log(`[AO3 Sync] Rejecting invalid ID from server: ${id}`);
+                invalidCount++;
+                return;
+            }
+
+            // NEVER restore items that were intentionally deleted
+            if (deletedLabels[id]) {
+                console.log(`[AO3 Sync] Permanently deleted label, skipping: ${id}`);
+                return;
+            }
+
+            // Only add if it doesn't exist locally
+            if (!currentLabels.hasOwnProperty(id)) {
+                console.log(`[AO3 Sync] Adding new label from server: ${id} -> ${serverLabels[id]}`);
+                mergedLabels[id] = serverLabels[id];
+            }
+        });
+
+        if (invalidCount > 0) {
+            console.log(`[AO3 Sync] Blocked ${invalidCount} invalid IDs from server`);
+        }
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedLabels));
+    }
+
+    if (serverData.notes) {
+        const serverNotes = JSON.parse(serverData.notes);
+        const mergedNotes = { ...currentNotes };
+        let invalidCount = 0;
+
+        Object.keys(serverNotes).forEach(id => {
+            // Check invalid IDs first
+            if (!isValidWorkId(id)) {
+                console.log(`[AO3 Sync] Rejecting invalid note ID from server: ${id}`);
+                invalidCount++;
+                return;
+            }
+
+            // NEVER restore items that were intentionally deleted
+            if (deletedNotes[id]) {
+                console.log(`[AO3 Sync] Permanently deleted note, skipping: ${id}`);
+                return;
+            }
+
+            const local = currentNotes[id];
+            const server = serverNotes[id];
+
+            if (!local) {
+                console.log(`[AO3 Sync] Adding new note from server: ${id}`);
+                mergedNotes[id] = server;
+            } else if (local.date && server.date && new Date(server.date) > new Date(local.date)) {
+                console.log(`[AO3 Sync] Updating note with newer server version: ${id}`);
+                mergedNotes[id] = server;
+            }
+        });
+
+        if (invalidCount > 0) {
+            console.log(`[AO3 Sync] Blocked ${invalidCount} invalid note IDs from server`);
+        }
+
+        localStorage.setItem(NOTES_KEY, JSON.stringify(mergedNotes));
+    }
+
+    if (serverData.authorNotes) {
+        const serverAuthorNotes = JSON.parse(serverData.authorNotes);
+        const mergedAuthorNotes = { ...currentAuthorNotes };
+        let invalidCount = 0;
+
+        Object.keys(serverAuthorNotes).forEach(id => {
+            // Check invalid IDs first
+            if (!isValidAuthorId(id)) {
+                console.log(`[AO3 Sync] Rejecting invalid author ID from server: ${id}`);
+                invalidCount++;
+                return;
+            }
+
+            // NEVER restore items that were intentionally deleted
+            if (deletedAuthorNotes[id]) {
+                console.log(`[AO3 Sync] Permanently deleted author note, skipping: ${id}`);
+                return;
+            }
+
+            const local = currentAuthorNotes[id];
+            const server = serverAuthorNotes[id];
+
+            if (!local) {
+                console.log(`[AO3 Sync] Adding new author note from server: ${id}`);
+                mergedAuthorNotes[id] = server;
+            } else if (local.date && server.date && new Date(server.date) > new Date(local.date)) {
+                console.log(`[AO3 Sync] Updating author note with newer server version: ${id}`);
+                mergedAuthorNotes[id] = server;
+            }
+        });
+
+        if (invalidCount > 0) {
+            console.log(`[AO3 Sync] Blocked ${invalidCount} invalid author note IDs from server`);
+        }
+
+        localStorage.setItem(AUTHOR_NOTES_KEY, JSON.stringify(mergedAuthorNotes));
+    }
+
+    // Auto-cleanup after merge to be extra safe
+    setTimeout(() => {
+        console.log("[AO3 Sync] Running automatic cleanup after merge...");
+        const cleanupResult = cleanupInvalidEntries();
+        if (cleanupResult.removedLabels + cleanupResult.removedNotes + cleanupResult.removedAuthorNotes > 0) {
+            console.log("[AO3 Sync] Auto-cleanup removed additional invalid entries:", cleanupResult);
+        }
+    }, 100);
+}
+
+        async initializeStorage() {
+            if (!this.settings.sheetUrl) {
+                alert("Please set the Deployment URL first");
+                return;
+            }
+
+            try {
+                const currentNotes = localStorage.getItem(NOTES_KEY) || "{}";
+                const currentAuthorNotes =
+                    localStorage.getItem(AUTHOR_NOTES_KEY) || "{}";
+                const currentLabels = localStorage.getItem(STORAGE_KEY) || "{}";
+
+                const response = await this.sendRequest({
+                    action: "initialize",
+                    data: {
+                        labels: currentLabels,
+                        notes: currentNotes,
+                        authorNotes: currentAuthorNotes,
+                    },
+                });
+
+                if (response.success) {
+                    localStorage.setItem(LAST_SYNCED_NOTES_KEY, currentNotes);
+                    localStorage.setItem(
+                        LAST_SYNCED_AUTHOR_NOTES_KEY,
+                        currentAuthorNotes
+                    );
+                    localStorage.setItem(LAST_SYNCED_LABELS_KEY, currentLabels);
+
+// Perform automatic cleanup after successful sync
+const cleanupResult = cleanupInvalidEntries();
+if (cleanupResult.removedLabels + cleanupResult.removedNotes + cleanupResult.removedAuthorNotes > 0) {
+    console.log(`[AO3 Sync] Post-sync cleanup removed: ${cleanupResult.removedLabels} labels, ${cleanupResult.removedNotes} notes, ${cleanupResult.removedAuthorNotes} author notes`);
+
+    // Update the "last synced" values with the cleaned data
+    const cleanedLabels = localStorage.getItem(STORAGE_KEY) || "{}";
+    const cleanedNotes = localStorage.getItem(NOTES_KEY) || "{}";
+    const cleanedAuthorNotes = localStorage.getItem(AUTHOR_NOTES_KEY) || "{}";
+
+    localStorage.setItem(LAST_SYNCED_LABELS_KEY, cleanedLabels);
+    localStorage.setItem(LAST_SYNCED_NOTES_KEY, cleanedNotes);
+    localStorage.setItem(LAST_SYNCED_AUTHOR_NOTES_KEY, cleanedAuthorNotes);
+}
+
+                    alert("Google storage initialized successfully!");
+                    this.settings.initialized = true;
+                    saveSyncSettings(this.settings);
+                } else {
+                    alert(
+                        "Failed to initialize: " +
+                            (response.error || "Unknown error")
+                    );
+                }
+            } catch (error) {
+                alert("Error initializing storage: " + error.message);
+            }
+        }
+    }
+
+    // Initialize sync manager
+    let syncManager = null;
+    const settings = loadSyncSettings();
+    if (settings.enabled && settings.sheetUrl) {
+        syncManager = new GoogleSyncManager();
+    }
+
+// Initialize download manager
+const downloadManager = new MassDownloadManager();
+
+    // Utility functions
+    const loadJSON = (k, f = {}) => {
+        try {
+            return JSON.parse(localStorage.getItem(k) || JSON.stringify(f));
+        } catch {
+            return f;
+        }
+    };
+    const saveJSON = (k, v) => {
+        localStorage.setItem(k, JSON.stringify(v));
+    };
+    const loadLabels = () => loadJSON(STORAGE_KEY, {});
+    const saveLabels = (v) => saveJSON(STORAGE_KEY, v);
+    const loadNotes = () => loadJSON(NOTES_KEY, {});
+    const saveNotes = (v) => saveJSON(NOTES_KEY, v);
+    const loadAuthorNotes = () => loadJSON(AUTHOR_NOTES_KEY, {});
+    const saveAuthorNotes = (v) => saveJSON(AUTHOR_NOTES_KEY, v);
+    const formatDateTime = (d) =>
+        d.toLocaleString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+    const loadDeletedLabels = () => loadJSON(DELETED_LABELS_KEY, {});
+    const saveDeletedLabels = (v) => saveJSON(DELETED_LABELS_KEY, v);
+    const loadDeletedNotes = () => loadJSON(DELETED_NOTES_KEY, {});
+    const saveDeletedNotes = (v) => saveJSON(DELETED_NOTES_KEY, v);
+    const loadDeletedAuthorNotes = () => loadJSON(DELETED_AUTHOR_NOTES_KEY, {});
+    const saveDeletedAuthorNotes = (v) => saveJSON(DELETED_AUTHOR_NOTES_KEY, v);
+const loadDownloadHistory = () => loadJSON(DOWNLOADED_WORKS_KEY, {});
+const saveDownloadHistory = (v) => saveJSON(DOWNLOADED_WORKS_KEY, v);
+const loadTagDates = () => loadJSON(TAG_DATES_KEY, {});
+const saveTagDates = (v) => saveJSON(TAG_DATES_KEY, v);
+  const getLastDownloadTime = (tag) => {
+    const history = loadDownloadHistory();
+    return history[tag] || 0;
+};
+const setLastDownloadTime = (tag, timestamp) => {
+    const history = loadDownloadHistory();
+    history[tag] = timestamp;
+    saveDownloadHistory(history);
+};
+
+
+async function fetchWorkDetails(workId) {
+    try {
+        const response = await fetch(
+            `https://archiveofourown.org/works/${workId}`,
+            {
+                mode: "cors",
+            }
+        );
+        const text = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, "text/html");
+
+        const title =
+            doc.querySelector("h2.title")?.textContent?.trim() ||
+            `Work ${workId}`;
+        const author =
+            doc.querySelector('a[rel="author"]')?.textContent?.trim() ||
+            "Unknown Author";
+
+        // Extract last updated date
+        let lastUpdated = 0;
+        const updateEl = doc.querySelector("dd.updated");
+        if (updateEl) {
+            const dateText = updateEl.textContent.trim();
+            const parsedDate = new Date(dateText);
+            if (!isNaN(parsedDate.getTime())) {
+                lastUpdated = parsedDate.getTime();
+            }
+        }
+
+        return { title, author, lastUpdated };
+    } catch (error) {
+        return { title: `Work ${workId}`, author: "Unknown Author", lastUpdated: 0 };
+    }
+}
+
+    function createSettingsPanel() {
+        const panel = document.createElement("div");
+        panel.innerHTML = `
+  <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#232136CC;color:#fff;border:2px solid #ddd;border-radius:8px;padding:20px;z-index:100000;max-width:500px;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+    <h3 style="margin-top:0;color:#fff;">AO3 Tagging & Sync Settings</h3>
+
+    <!-- Cleanup Tools Section -->
+    <div style="margin:15px 0;">
+      <h4 style="margin:0 0 8px 0;color:#fff;font-size:1em;">Storage Cleanup</h4>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="cleanup-storage" style="flex:1;min-width:140px;padding:8px 12px;background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.9em;">Clean Up Storage</button>
+        <button id="deep-cleanup-storage" style="flex:1;min-width:140px;padding:8px 12px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.9em;">Deep Clean</button>
+<button id="clear-deletion-history" style="flex:1;min-width:140px;padding:8px 12px;background:#9c27b0;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.9em;">⚠️ Restore Deleted</button>      </div>
+    </div>
+
+    <!-- Sync Settings Section -->
+    <div style="margin:15px 0;">
+      <h4 style="margin:0 0 8px 0;color:#fff;font-size:1em;">Google Sync</h4>
+      <div style="margin:8px 0;">
+        <label style="color:#fff;display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="sync-enabled" ${
+              settings.enabled ? "checked" : ""
+          }>
+          Enable Google Sync
+        </label>
+      </div>
+      <div style="margin:8px 0;">
+        <label style="display:block;margin-bottom:5px;color:#fff;font-size:0.9em;">Apps Script URL:</label>
+        <input type="text" id="sheet-url" value="${
+            settings.sheetUrl || ""
+        }" style="width:100%;padding:6px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;" placeholder="https://script.google.com/macros/s/.../exec">
+      </div>
+      <div style="margin:8px 0;">
+        <label style="display:block;margin-bottom:5px;color:#fff;font-size:0.9em;">Sync Interval (seconds):</label>
+        <input type="number" id="sync-interval" value="${
+            settings.syncInterval || 60
+        }" min="30" max="3600" style="width:100px;padding:6px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;">
+      </div>
+      <div style="margin:8px 0;">
+        <label style="color:#fff;display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="show-widget" ${
+              settings.showWidget !== false ? "checked" : ""
+          }>
+          Show sync widget
+        </label>
+      </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div style="margin-top:20px;display:flex;gap:10px;width:100%;">
+      <button id="save-sync-settings" style="padding:8px 16px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;white-space:nowrap;flex-grow:1;">Save Settings</button>
+      <button id="init-sync-storage" style="padding:8px 16px;background:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;white-space:nowrap;flex-grow:1;">Initialize Storage</button>
+      <button id="close-settings" style="padding:8px 16px;background:#666;color:white;border:none;border-radius:4px;cursor:pointer;white-space:nowrap;flex-grow:1;">Close</button>
+    </div>
+  </div>
+  <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:99999;"></div>
+    `;
+
+        document.body.appendChild(panel);
+
+        // Cleanup buttons event listeners
+        panel
+            .querySelector("#cleanup-storage")
+            ?.addEventListener("click", () => {
+                const result = cleanupInvalidEntries();
+                alert(
+                    `Cleanup complete!\nRemoved: ${result.removedLabels} labels, ${result.removedNotes} notes\nKept: ${result.keptLabels} labels, ${result.keptNotes} notes`
+                );
+            });
+
+panel.querySelector('#deep-cleanup-storage')?.addEventListener('click', async () => {
+    if (!confirm('This will check each work against AO3 to verify it exists. This may take several minutes. Continue?')) {
+        return;
+    }
+
+    const result = await deepCleanupWithValidation();
+
+    // Show detailed report in alert (or you could create a modal)
+    alert(result.report);
+});
+
+        panel
+            .querySelector("#clear-deletion-history")
+            ?.addEventListener("click", () => {
+                // First warning - make it clear what this does
+                if (
+                    !confirm(
+                        "⚠️ WARNING: This will RESTORE all previously deleted tags and notes!\n\nAny tags/notes you deleted will come back from the server on the next sync.\n\nThis is usually NOT what you want. Are you sure you want to continue?"
+                    )
+                ) {
+                    return;
+                }
+
+                const deletedLabels = loadDeletedLabels();
+                const deletedNotes = loadDeletedNotes();
+                const deletedAuthorNotes = loadDeletedAuthorNotes();
+
+                const totalDeleted =
+                    Object.keys(deletedLabels).length +
+                    Object.keys(deletedNotes).length +
+                    Object.keys(deletedAuthorNotes).length;
+
+                if (totalDeleted === 0) {
+                    alert("No deletion history to clear.");
+                    return;
+                }
+
+                // Build preview of what will be restored
+                let preview = "";
+
+                if (Object.keys(deletedLabels).length > 0) {
+                    const labelsList = Object.keys(deletedLabels)
+                        .map(
+                            (id) =>
+                                `  • Work ${id}: "${
+                                    deletedLabels[id].tag || "unknown tag"
+                                }"`
+                        )
+                        .join("\n");
+                    preview += `\nDeleted Tags (${
+                        Object.keys(deletedLabels).length
+                    }):\n${labelsList}`;
+                }
+
+                if (Object.keys(deletedNotes).length > 0) {
+                    const notesList = Object.keys(deletedNotes)
+                        .map((id) => `  • Work ${id}`)
+                        .join("\n");
+                    preview += `\n\nDeleted Notes (${
+                        Object.keys(deletedNotes).length
+                    }):\n${notesList}`;
+                }
+
+                if (Object.keys(deletedAuthorNotes).length > 0) {
+                    const authorNotesList = Object.keys(deletedAuthorNotes)
+                        .map((id) => `  • Author ${id}`)
+                        .join("\n");
+                    preview += `\n\nDeleted Author Notes (${
+                        Object.keys(deletedAuthorNotes).length
+                    }):\n${authorNotesList}`;
+                }
+
+                // Second, more specific warning with the actual data
+                if (
+                    !confirm(
+                        `🚨 FINAL WARNING 🚨\n\nThis will restore ${totalDeleted} previously deleted items:${preview}\n\nThese items will reappear on your next sync.\n\nClick OK only if you're absolutely certain you want your deleted items back.`
+                    )
+                ) {
+                    return;
+                }
+
+                localStorage.removeItem(DELETED_LABELS_KEY);
+                localStorage.removeItem(DELETED_NOTES_KEY);
+                localStorage.removeItem(DELETED_AUTHOR_NOTES_KEY);
+
+                alert(
+                    `✅ Deletion history cleared.\n\n${totalDeleted} previously deleted items will be restored on your next sync.`
+                );
+            });
+
+        // Settings event listeners
+        panel
+            .querySelector("#save-sync-settings")
+            .addEventListener("click", () => {
+                const newSettings = {
+                    ...settings,
+                    enabled: panel.querySelector("#sync-enabled").checked,
+                    sheetUrl: panel.querySelector("#sheet-url").value,
+                    syncInterval: parseInt(
+                        panel.querySelector("#sync-interval").value
+                    ),
+                    showWidget: panel.querySelector("#show-widget").checked,
+                };
+                saveSyncSettings(newSettings);
+                alert(
+                    "Settings saved! Please reload the page for changes to take effect."
+                );
+                panel.remove();
+            });
+
+        panel
+            .querySelector("#init-sync-storage")
+            .addEventListener("click", async () => {
+                if (!syncManager) {
+                    syncManager = new GoogleSheetsSync();
+                }
+                await syncManager.initializeStorage();
+            });
+
+        panel.querySelector("#close-settings").addEventListener("click", () => {
+            panel.remove();
+        });
+
+        panel.addEventListener("click", (e) => {
+            if (
+                e.target === panel ||
+                e.target.style.background === "rgba(0, 0, 0, 0.5)"
+            ) {
+                panel.remove();
+            }
+        });
+    }
+
+    function createTagBrowserModal() {
+        if (document.getElementById("tag-browser-modal")) return;
+
+        const labels = loadLabels();
+        const notes = loadNotes();
+        const totalTaggedFics = Object.keys(labels).length;
+
+        let tagGroups = {};
+        Object.entries(labels).forEach(([ficId, tag]) => {
+            if (!tagGroups[tag]) tagGroups[tag] = [];
+            tagGroups[tag].push(ficId);
+        });
+
+        function refreshTagGroups() {
+            const currentLabels = loadLabels();
+            tagGroups = {};
+            Object.entries(currentLabels).forEach(([ficId, tag]) => {
+                if (!tagGroups[tag]) tagGroups[tag] = [];
+                tagGroups[tag].push(ficId);
+            });
+            return tagGroups;
+        }
+
+        const tagOrder = [
+            "Finished",
+            "To Read",
+            "Not Interested",
+            "Dropped",
+            "Disliked",
+            "Favourite",
+            "Dish",
+        ];
+        const sortedTags = tagOrder.filter((tag) => tagGroups[tag]);
+        const tagsList = sortedTags
+            .map((tag) => {
+                const count = tagGroups[tag].length;
+                const color = TAG_COLORS[tag] || {
+                    bg: "#6e6a86",
+                    text: "#000",
+                };
+
+                const glowStyle = `
+      border: 2px solid ${color.bg};
+      box-shadow: 0 0 8px 2px ${color.bg}55;
+    `;
+
+                return `
+      <div class="tag-item" data-tag="${tag}" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;margin:4px 0;border-radius:6px;background:#44415a40;${glowStyle}cursor:pointer;transition:all 0.2s;">
+        <span style="font-weight:bold;">${tag}</span>
+        <span style="font-size:0.9em;">${count} work${
+                    count === 1 ? "" : "s"
+                }</span>
+      </div>
+    `;
+            })
+            .join("");
+
+        const modal = document.createElement("div");
+        modal.id = "tag-browser-modal";
+
+        if (Object.keys(tagGroups).length === 0) {
+            modal.innerHTML = `
+      <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:100000;display:flex;align-items:center;justify-content:center;">
+        <div style="background:#232136CC;color:#fff;padding:30px;border-radius:8px;text-align:center;max-width:400px;border:1px solid #ddd;box-shadow:0 4px 20px rgba(0,0,0,0.15);">
+          <div style="margin-bottom:20px;color:#d32f2f;">No tagged fics found.</div>
+          <button id="close-tag-browser" style="padding:8px 16px;background:#666;color:#fff;border:none;border-radius:4px;cursor:pointer;">Close</button>
+        </div>
+      </div>
+    `;
+        } else {
+            modal.innerHTML = `
+      <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.3);z-index:100000;display:flex;align-items:center;justify-content:center;" id="modal-backdrop">
+        <div style="background:#232136CC;color:#fff;padding:0;border-radius:8px;width:90%;max-width:600px;height:80%;max-height:700px;display:flex;flex-direction:column;border:1px solid #ddd;box-shadow:0 4px 20px rgba(0,0,0,0.15);">
+          <div style="padding:20px;border-bottom:1px solid #ddd;display:flex;justify-content:space-between;align-items:center;background:#232136CC;border-radius:8px 8px 0 0;">
+<h3 style="margin:0;color:#fff;">Browse Tagged Fics (${totalTaggedFics} total)</h3>
+            <button id="close-tag-browser" style="background:none;border:none;font-size:24px;cursor:pointer;padding:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:4px;color:#fff;">×</button>
+          </div>
+          <div id="tag-browser-content" style="flex:1;overflow-y:auto;padding:20px;background:#232136CC;border-radius:0 0 8px 8px;">
+            ${tagsList}
+          </div>
+        </div>
+      </div>
+    `;
+        }
+
+        document.body.appendChild(modal);
+
+        async function showWorksForTag(tag) {
+            refreshTagGroups();
+            const works = tagGroups[tag] || [];
+            const color = TAG_COLORS[tag] || { bg: "#6e6a86", text: "#000" };
+
+            // Replace the worksList creation part in your showWorksForTag function with this:
+const worksList = await Promise.all(
+    works.map(async (ficId) => {
+        const workId = ficId
+            .replace("bookmark_", "")
+            .replace(/^.*?(\d+).*$/, "$1");
+
+        // Fetch basic details for all tags
+        const details = await fetchWorkDetails(workId);
+        const note = notes[ficId];
+
+        // Only fetch summary for "To Read" tag
+        let summary = '';
+        if (tag === 'To Read') {
+            try {
+                const response = await fetch(`https://archiveofourown.org/works/${workId}`);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
+                const summaryEl = doc.querySelector('.summary blockquote');
+                summary = summaryEl ? summaryEl.textContent.trim() : '';
+            } catch (error) {
+                summary = '';
+            }
+        }
+
+        return `
+<div class="work-item" data-fic-id="${ficId}" style="padding:12px 16px;margin:8px 0;border-radius:6px;background:#232136CC;border:1px solid #ddd;box-shadow:0 2px 4px rgba(0,0,0,0.1);position:relative;">
+  <div style="margin-bottom:8px;">
+    <a href="https://archiveofourown.org/works/${workId}" target="_blank" style="color:#87ceeb;">
+      ${details.title}
+    </a>
+    <div style="font-size:0.9em;margin-top:2px;color:#ccc;">by ${details.author}</div>
+  </div>
+  ${summary ? `
+    <div style="font-size:0.85em;margin:6px 0;padding:8px;background:#44415a20;border-radius:4px;border-left:3px solid #6b8a7a;color:#ddd;font-style:italic;">
+      ${summary}
+    </div>
+  ` : ''}
+  ${note ? `
+    <div style="font-size:0.9em;margin-top:6px;padding:8px;background:#44415a40;border-radius:4px;border:1px solid #eee;">
+      "${note.text}"
+      ${note.date ? `<div style="font-size:0.8em;margin-top:4px;color:#999;">${note.date}</div>` : ""}
+    </div>
+  ` : ""}
+  <button
+    class="delete-tag-btn"
+    data-fic-id="${ficId}"
+    data-tag="${tag}"
+    style="position:absolute;top:8px;right:8px;background:#f44336;color:white;border:none;border-radius:4px;width:24px;height:24px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;transition:all 0.2s;"
+    title="Remove ${tag} tag"
+  >×</button>
+</div>
+      `;
+    })
+);
+
+            const content = modal.querySelector("#tag-browser-content");
+ // Replace the content.innerHTML in your showWorksForTag function with this:
+// (This is the part that creates the header with buttons)
+
+content.innerHTML = `
+<div style="margin-bottom:20px;">
+  <button id="back-to-tags" style="background:none;border:1px solid #666;padding:6px 12px;border-radius:4px;cursor:pointer;margin-bottom:16px;color:#fff;">
+    ← Back to Tags
+  </button>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+    <div style="padding:6px 12px;border-radius:4px;font-weight:bold;background:${color.bg};color:${color.text};border:2px solid ${color.bg};box-shadow:0 0 8px 2px ${color.bg}55;">
+      ${tag}
+    </div>
+    <span style="color:#ccc;" id="work-count">
+      ${works.length} work${works.length === 1 ? "" : "s"}
+    </span>
+    ${(tag === 'Favourite' || tag === 'Dish') ? `
+<button id="download-tagged-works-here" style="background:${tag === 'Favourite' ? '#d6a5c9' : '#a85c6b'};color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:auto;">
+  📚 Download All
+</button>
+` : ''}
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
+    <span style="color:#ccc;font-size:0.9em;">Sort by:</span>
+    <button id="sort-title" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Title A-Z</button>
+    <button id="sort-date-added" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Date Added</button>
+    <button id="sort-date-newest" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Newest First</button>
+  </div>
+</div>
+<div id="works-list">${worksList.join("")}</div>
+`;
+
+// Add this right after the content.innerHTML = ... line:
+
+// Sorting functionality
+let currentSort = 'title'; // default sort
+let worksData = works.map(ficId => {
+    const workId = ficId.replace("bookmark_", "").replace(/^.*?(\d+).*$/, "$1");
+    return {
+        ficId,
+        workId,
+        // Try to get date from localStorage if you track when tags were added
+        // For now, we'll use a fallback approach
+        dateAdded: getTagDate(ficId) || Date.now(),
+        title: '', // Will be populated when works load
+    };
+});
+
+function getTagDate(ficId) {
+    const tagDates = loadTagDates();
+    return tagDates[ficId] || Date.now(); // Return actual tag date or current time as fallback
+}
+
+function updateSortButtons(activeSort) {
+    const buttons = ['sort-title', 'sort-date-added', 'sort-date-newest'];
+    buttons.forEach(btnId => {
+        const btn = content.querySelector(`#${btnId}`);
+        if (btn) {
+            if (btnId === `sort-${activeSort}`) {
+                btn.style.background = color.bg;
+                btn.style.color = color.text;
+            } else {
+                btn.style.background = '#555';
+                btn.style.color = 'white';
+            }
+        }
+    });
+}
+
+async function sortAndDisplayWorks(sortType) {
+    currentSort = sortType;
+    updateSortButtons(sortType);
+
+    const worksList = document.getElementById('works-list');
+    worksList.innerHTML = '<div style="text-align:center;color:#ccc;padding:20px;">Sorting...</div>';
+
+    // Get work details for sorting
+    const worksWithDetails = await Promise.all(
+        works.map(async (ficId) => {
+            const workId = ficId.replace("bookmark_", "").replace(/^.*?(\d+).*$/, "$1");
+            const details = await fetchWorkDetails(workId);
+            const note = notes[ficId];
+
+            // Only fetch summary for "To Read" tag
+            let summary = '';
+            if (tag === 'To Read') {
+                try {
+                    const response = await fetch(`https://archiveofourown.org/works/${workId}`);
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(text, 'text/html');
+                    const summaryEl = doc.querySelector('.summary blockquote');
+                    summary = summaryEl ? summaryEl.textContent.trim() : '';
+                } catch (error) {
+                    summary = '';
+                }
+            }
+
+return {
+    ficId,
+    workId,
+    title: details.title,
+    author: details.author,
+    summary,
+    note,
+    dateAdded: getTagDate(ficId),
+    lastUpdated: details.lastUpdated || 0
+};
+        })
+    );
+
+    // Sort based on type
+    switch (sortType) {
+        case 'title':
+            worksWithDetails.sort((a, b) => a.title.localeCompare(b.title));
+            break;
+        case 'date-added':
+            case 'date-added':
+    worksWithDetails.sort((a, b) => (a.lastUpdated || 0) - (b.lastUpdated || 0)); // oldest updated first
+    break;
+            break;
+        case 'date-newest':
+            worksWithDetails.sort((a, b) => b.dateAdded - a.dateAdded); // newest first
+            break;
+    }
+
+    // Generate HTML
+    const sortedWorksHTML = worksWithDetails.map(work => `
+<div class="work-item" data-fic-id="${work.ficId}" style="padding:12px 16px;margin:8px 0;border-radius:6px;background:#232136CC;border:1px solid #ddd;box-shadow:0 2px 4px rgba(0,0,0,0.1);position:relative;">
+  <div style="margin-bottom:8px;">
+    <a href="https://archiveofourown.org/works/${work.workId}" target="_blank" style="color:#87ceeb;">
+      ${work.title}
+    </a>
+    <div style="font-size:0.9em;margin-top:2px;color:#ccc;">by ${work.author}</div>
+  </div>
+  ${work.summary ? `
+    <div style="font-size:0.85em;margin:6px 0;padding:8px;background:#44415a20;border-radius:4px;border-left:3px solid #6b8a7a;color:#ddd;font-style:italic;">
+      ${work.summary}
+    </div>
+  ` : ''}
+  ${work.note ? `
+    <div style="font-size:0.9em;margin-top:6px;padding:8px;background:#44415a40;border-radius:4px;border:1px solid #eee;">
+      "${work.note.text}"
+      ${work.note.date ? `<div style="font-size:0.8em;margin-top:4px;color:#999;">${work.note.date}</div>` : ""}
+    </div>
+  ` : ""}
+  <button
+    class="delete-tag-btn"
+    data-fic-id="${work.ficId}"
+    data-tag="${tag}"
+    style="position:absolute;top:8px;right:8px;background:#f44336;color:white;border:none;border-radius:4px;width:24px;height:24px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;transition:all 0.2s;"
+    title="Remove ${tag} tag"
+  >×</button>
+</div>
+    `).join('');
+
+    worksList.innerHTML = sortedWorksHTML;
+
+    // Re-attach delete button listeners
+    const deleteButtons = worksList.querySelectorAll(".delete-tag-btn");
+    deleteButtons.forEach((btn) => {
+        btn.addEventListener("mouseenter", () => {
+            btn.style.background = "#d32f2f";
+            btn.style.transform = "scale(1.1)";
+        });
+        btn.addEventListener("mouseleave", () => {
+            btn.style.background = "#f44336";
+            btn.style.transform = "scale(1)";
+        });
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const ficId = btn.dataset.ficId;
+            const tagToRemove = btn.dataset.tag;
+            if (!confirm(`Remove "${tagToRemove}" tag from this story?`)) return;
+
+            try {
+                const labels = loadLabels();
+                if (labels[ficId] === tagToRemove) {
+                    delete labels[ficId];
+                    saveLabels(labels);
+                    const workItem = btn.closest(".work-item");
+                    if (workItem) {
+                        workItem.style.transition = "opacity 0.3s, transform 0.3s";
+                        workItem.style.opacity = "0";
+                        workItem.style.transform = "translateX(20px)";
+                        setTimeout(() => {
+                            workItem.remove();
+                            refreshTagGroups();
+                            const remainingWorks = tagGroups[tagToRemove] || [];
+                            const countDisplay = content.querySelector("#work-count");
+                            if (countDisplay) {
+                                const newCount = remainingWorks.length;
+                                countDisplay.textContent = `${newCount} work${newCount === 1 ? "" : "s"}`;
+                            }
+                            if (remainingWorks.length === 0) {
+                                setTimeout(() => showMainTagList(), 300);
+                            }
+                        }, 300);
+                    }
+                }
+            } catch (error) {
+                console.error("Error deleting tag:", error);
+                alert("Error deleting tag: " + error.message);
+            }
+        });
+    });
+}
+
+// Add sort button listeners
+content.querySelector('#sort-title').addEventListener('click', () => sortAndDisplayWorks('title'));
+content.querySelector('#sort-date-added').addEventListener('click', () => sortAndDisplayWorks('date-added'));
+content.querySelector('#sort-date-newest').addEventListener('click', () => sortAndDisplayWorks('date-newest'));
+
+// Initialize with title sort
+updateSortButtons('title');
+
+// Initial load is already done with worksList, so we don't need to call sortAndDisplayWorks initially
+            // Add delete button functionality
+            const deleteButtons = content.querySelectorAll(".delete-tag-btn");
+            deleteButtons.forEach((btn) => {
+                btn.addEventListener("mouseenter", () => {
+                    btn.style.background = "#d32f2f";
+                    btn.style.transform = "scale(1.1)";
+                });
+
+                btn.addEventListener("mouseleave", () => {
+                    btn.style.background = "#f44336";
+                    btn.style.transform = "scale(1)";
+                });
+
+                btn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+
+                    const ficId = btn.dataset.ficId;
+                    const tagToRemove = btn.dataset.tag;
+
+                    console.log(
+                        `Attempting to delete tag "${tagToRemove}" from fic "${ficId}"`
+                    );
+                    console.log(
+                        `[AO3 Delete] ficId type:`,
+                        typeof ficId,
+                        "length:",
+                        ficId?.length
+                    );
+
+                    if (!ficId || ficId === "" || ficId === "undefined") {
+                        console.error(
+                            "[AO3 Delete] Invalid ficId detected:",
+                            ficId
+                        );
+                        alert("Error: Invalid fic ID. Cannot delete tag.");
+                        return;
+                    }
+
+                    if (
+                        !confirm(`Remove "${tagToRemove}" tag from this story?`)
+                    ) {
+                        return;
+                    }
+
+                    try {
+                        const labels = loadLabels();
+                        console.log("Before deletion:", labels[ficId]);
+
+                        if (labels[ficId] === tagToRemove) {
+                            delete labels[ficId];
+                            saveLabels(labels);
+                            console.log("Tag deleted successfully");
+
+                            const workItem = btn.closest(".work-item");
+                            if (workItem) {
+                                workItem.style.transition =
+                                    "opacity 0.3s, transform 0.3s";
+                                workItem.style.opacity = "0";
+                                workItem.style.transform = "translateX(20px)";
+
+                                setTimeout(() => {
+                                    workItem.remove();
+                                    refreshTagGroups();
+                                    const remainingWorks =
+                                        tagGroups[tagToRemove] || [];
+
+                                    const countDisplay = content.querySelector(
+                                        "#work-count"
+                                    );
+                                    if (countDisplay) {
+                                        const newCount = remainingWorks.length;
+                                        countDisplay.textContent = `${newCount} work${
+                                            newCount === 1 ? "" : "s"
+                                        }`;
+                                    }
+
+                                    if (remainingWorks.length === 0) {
+                                        setTimeout(() => {
+                                            showMainTagList();
+                                        }, 300);
+                                    }
+                                }, 300);
+                            }
+                        } else {
+                            console.log(
+                                "Tag mismatch or not found:",
+                                labels[ficId],
+                                "vs",
+                                tagToRemove
+                            );
+                            alert("Error: Tag not found or mismatch");
+                        }
+                    } catch (error) {
+                        console.error("Error deleting tag:", error);
+                        alert("Error deleting tag: " + error.message);
+                    }
+                });
+            });
+
+            // Add back button functionality
+            const backBtn = content.querySelector("#back-to-tags");
+
+// Add download button for favourites and dish
+if (tag === 'Favourite' || tag === 'Dish') {
+    const downloadBtn = content.querySelector("#download-tagged-works-here");
+    if (downloadBtn) {
+        const normalColor = tag === 'Favourite' ? '#d6a5c9' : '#a85c6b';
+        const hoverColor = tag === 'Favourite' ? '#c49bb8' : '#965159';
+
+        downloadBtn.addEventListener("mouseenter", () => {
+            downloadBtn.style.background = hoverColor;
+        });
+        downloadBtn.addEventListener("mouseleave", () => {
+            downloadBtn.style.background = normalColor;
+        });
+downloadBtn.addEventListener("click", async () => {
+    console.log('Download button clicked!'); // ADD THIS LINE
+    await downloadManager.downloadTaggedWorks(tag);
+});
+    }
+}
+            backBtn.addEventListener("mouseenter", () => {
+                backBtn.style.background = "#f8f9fa";
+                backBtn.style.borderColor = "#0066cc";
+                backBtn.style.color = "#0066cc";
+            });
+
+            backBtn.addEventListener("mouseleave", () => {
+                backBtn.style.background = "none";
+                backBtn.style.borderColor = "#666";
+                backBtn.style.color = "#fff";
+            });
+
+            backBtn.addEventListener("click", () => {
+                showMainTagList();
+            });
+        }
+
+        function showMainTagList() {
+            refreshTagGroups();
+
+            const updatedTagsList = tagOrder
+                .filter((t) => tagGroups[t] && tagGroups[t].length > 0)
+                .map((t) => {
+                    const count = tagGroups[t].length;
+                    const tagColor = TAG_COLORS[t] || {
+                        bg: "#6e6a86",
+                        text: "#000",
+                    };
+                    const glowStyle = `
+        border: 2px solid ${tagColor.bg};
+        box-shadow: 0 0 8px 2px ${tagColor.bg}55;
+      `;
+
+                    return `
+        <div class="tag-item" data-tag="${t}" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;margin:4px 0;border-radius:6px;background:#44415a40;${glowStyle}cursor:pointer;transition:all 0.2s;">
+          <span style="font-weight:bold;">${t}</span>
+          <span style="font-size:0.9em;">${count} work${
+                        count === 1 ? "" : "s"
+                    }</span>
+        </div>
+      `;
+                })
+                .join("");
+
+            const content = modal.querySelector("#tag-browser-content");
+
+            if (updatedTagsList === "") {
+                content.innerHTML = `
+        <div style="text-align:center;color:#ccc;margin-top:50px;">
+          <div style="margin-bottom:20px;">No tagged fics found.</div>
+        </div>
+      `;
+                return;
+            }
+
+            content.innerHTML = updatedTagsList;
+
+            const newTagItems = content.querySelectorAll(".tag-item");
+            newTagItems.forEach((item) => {
+                const itemTag = item.dataset.tag;
+                const itemColor = TAG_COLORS[itemTag] || {
+                    bg: "#6e6a86",
+                    text: "#000",
+                };
+
+                item.addEventListener("mouseenter", () => {
+                    item.style.background = "#232136CC";
+                    item.style.borderColor = itemColor.bg;
+                    item.style.transform = "translateY(-1px)";
+                    item.style.boxShadow = `0 0 12px 3px ${itemColor.bg}77`;
+                });
+
+                item.addEventListener("mouseleave", () => {
+                    item.style.background = "#44415a40";
+                    item.style.borderColor = itemColor.bg;
+                    item.style.transform = "";
+                    item.style.boxShadow = `0 0 8px 2px ${itemColor.bg}55`;
+                });
+
+                item.addEventListener("click", () => {
+                    showWorksForTag(itemTag);
+                });
+            });
+        }
+
+        // Initial setup for tag items in modal
+        const tagItems = modal.querySelectorAll(".tag-item");
+        tagItems.forEach((item) => {
+            const tag = item.dataset.tag;
+            const color = TAG_COLORS[tag] || { bg: "#6e6a86", text: "#000" };
+
+            item.addEventListener("mouseenter", () => {
+                item.style.background = "#232136CC";
+                item.style.borderColor = color.bg;
+                item.style.transform = "translateY(-1px)";
+                item.style.boxShadow = `0 0 12px 3px ${color.bg}77`;
+            });
+
+            item.addEventListener("mouseleave", () => {
+                item.style.background = "#44415a40";
+                item.style.borderColor = color.bg;
+                item.style.transform = "";
+                item.style.boxShadow = `0 0 8px 2px ${color.bg}55`;
+            });
+
+            item.addEventListener("click", () => {
+                showWorksForTag(tag);
+            });
+        });
+
+        // Close button functionality
+        const closeBtn = modal.querySelector("#close-tag-browser");
+        if (closeBtn) {
+            closeBtn.addEventListener("mouseenter", () => {
+                closeBtn.style.background = "#f0f0f0";
+                closeBtn.style.color = "#000";
+            });
+
+            closeBtn.addEventListener("mouseleave", () => {
+                closeBtn.style.background = "none";
+                closeBtn.style.color = "#fff";
+            });
+
+            closeBtn.addEventListener("click", () => {
+                modal.remove();
+            });
+        }
+
+        // Backdrop click to close
+        const backdrop = modal.querySelector("#modal-backdrop");
+        if (backdrop) {
+            backdrop.addEventListener("click", (e) => {
+                if (e.target.id === "modal-backdrop") {
+                    modal.remove();
+                }
+            });
+        }
+
+        // ESC key to close
+        const escHandler = (e) => {
+            if (e.key === "Escape") {
+                modal.remove();
+                document.removeEventListener("keydown", escHandler);
+            }
+        };
+        document.addEventListener("keydown", escHandler);
+    }
+
+    function addSettingsButton() {
+        const possibleNavs = [
+            "ul.primary.navigation.actions",
+            "ul.primary.navigation",
+            "ul.navigation.actions",
+            ".primary.header ul",
+            "nav ul",
+            "#header .navigation ul",
+        ];
+
+        let nav = null;
+        for (const selector of possibleNavs) {
+            nav = document.querySelector(selector);
+            if (nav) break;
+        }
+
+        if (!nav) {
+            const header =
+                document.querySelector("#header") ||
+                document.querySelector("header") ||
+                document.querySelector("#main");
+            if (header) {
+                nav = document.createElement("ul");
+                nav.style.cssText =
+                    "list-style:none;padding:0;margin:10px 0;display:flex;gap:10px;";
+                header.insertBefore(nav, header.firstChild);
+            }
+        }
+
+        if (nav && !document.querySelector("#sync-settings-btn")) {
+            const syncLi = document.createElement("li");
+            syncLi.innerHTML =
+                '<a href="#" id="sync-settings-btn" class="dropdown-toggle">Sync</a>';
+            nav.appendChild(syncLi);
+
+            syncLi
+                .querySelector("#sync-settings-btn")
+                .addEventListener("click", (e) => {
+                    e.preventDefault();
+                    createSettingsPanel();
+                });
+
+            const tagsLi = document.createElement("li");
+            tagsLi.innerHTML =
+                '<a href="#" id="browse-tags-btn" class="dropdown-toggle">Tags</a>';
+            nav.appendChild(tagsLi);
+
+            tagsLi
+                .querySelector("#browse-tags-btn")
+                .addEventListener("click", (e) => {
+                    e.preventDefault();
+                    createTagBrowserModal();
+                });
+        }
+    }
+
+    // Add these functions to your userscript to clean up invalid entries
+
+    // Storage cleanup functions
+    function cleanupInvalidEntries() {
+        const STORAGE_KEY = "ao3_fic_labels";
+        const NOTES_KEY = "ao3_fic_notes";
+        const AUTHOR_NOTES_KEY = "ao3_author_notes";
+
+        console.log("[AO3 Cleanup] Starting storage cleanup...");
+
+        // Clean up labels
+        const labels = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+        const validLabels = {};
+        let removedLabels = 0;
+
+        Object.entries(labels).forEach(([id, label]) => {
+            if (isValidWorkId(id)) {
+                validLabels[id] = label;
+            } else {
+                console.log(`[AO3 Cleanup] Removing invalid label ID: ${id}`);
+                removedLabels++;
+            }
+        });
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(validLabels));
+
+        // Clean up notes
+        const notes = JSON.parse(localStorage.getItem(NOTES_KEY) || "{}");
+        const validNotes = {};
+        let removedNotes = 0;
+
+        Object.entries(notes).forEach(([id, note]) => {
+            if (isValidWorkId(id)) {
+                validNotes[id] = note;
+            } else {
+                console.log(`[AO3 Cleanup] Removing invalid note ID: ${id}`);
+                removedNotes++;
+            }
+        });
+
+        localStorage.setItem(NOTES_KEY, JSON.stringify(validNotes));
+
+        // Clean up author notes
+        const authorNotes = JSON.parse(
+            localStorage.getItem(AUTHOR_NOTES_KEY) || "{}"
+        );
+        const validAuthorNotes = {};
+        let removedAuthorNotes = 0;
+
+        Object.entries(authorNotes).forEach(([id, note]) => {
+            if (isValidAuthorId(id)) {
+                validAuthorNotes[id] = note;
+            } else {
+                console.log(
+                    `[AO3 Cleanup] Removing invalid author note ID: ${id}`
+                );
+                removedAuthorNotes++;
+            }
+        });
+
+        localStorage.setItem(
+            AUTHOR_NOTES_KEY,
+            JSON.stringify(validAuthorNotes)
+        );
+
+        console.log(`[AO3 Cleanup] Cleanup complete:
+    - Removed ${removedLabels} invalid labels
+    - Removed ${removedNotes} invalid notes
+    - Removed ${removedAuthorNotes} invalid author notes
+    - Kept ${Object.keys(validLabels).length} valid labels
+    - Kept ${Object.keys(validNotes).length} valid notes
+    - Kept ${Object.keys(validAuthorNotes).length} valid author notes`);
+
+        return {
+            removedLabels,
+            removedNotes,
+            removedAuthorNotes,
+            keptLabels: Object.keys(validLabels).length,
+            keptNotes: Object.keys(validNotes).length,
+            keptAuthorNotes: Object.keys(validAuthorNotes).length,
+        };
+    }
+
+    function isValidAuthorId(id) {
+        // Check if it's a valid author ID format (username or username_pseudonym)
+        if (!id || typeof id !== "string") return false;
+
+        // Should not be purely numeric (those are likely work IDs stored incorrectly)
+        if (/^\d+$/.test(id)) return false;
+
+        // Should contain valid username characters
+        return /^[a-zA-Z0-9_-]+(_[a-zA-Z0-9_-]+)?$/.test(id);
+    }
+
+    // Function to validate a work ID by checking if it exists on AO3
+    async function validateWorkExists(workId) {
+        try {
+            const response = await fetch(
+                `https://archiveofourown.org/works/${workId}`,
+                {
+                    method: "HEAD", // Just check if it exists, don't download content
+                    mode: "cors",
+                }
+            );
+            return response.status === 200;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    // Advanced cleanup that actually checks if works exist (use sparingly)
+async function deepCleanupWithValidation() {
+    console.log('[AO3 Deep Check] Starting validation check (this may take a while)...');
+
+    const labels = JSON.parse(localStorage.getItem('ao3_fic_labels') || '{}');
+    let checkedCount = 0;
+    let invalidIds = [];
+    let validCount = 0;
+
+    for (const [id, label] of Object.entries(labels)) {
+        if (!isValidWorkId(id)) {
+            console.log(`[AO3 Deep Check] Invalid format: ${id}`);
+            invalidIds.push({id, label, reason: 'Invalid format'});
+            continue;
+        }
+
+        const workId = id.startsWith('bookmark_')
+            ? id.replace('bookmark_', '').replace(/^.*?(\d+).*$/, '$1')
+            : id.match(/\d+/)?.[0];
+
+        if (!workId) {
+            console.log(`[AO3 Deep Check] No work ID found in: ${id}`);
+            invalidIds.push({id, label, reason: 'No work ID found'});
+            continue;
+        }
+
+        // Add delay to avoid overwhelming AO3's servers
+        await new Promise(resolve => setTimeout(resolve, 100));
+        checkedCount++;
+
+        const exists = await validateWorkExists(workId);
+        if (exists) {
+            validCount++;
+        } else {
+            console.log(`[AO3 Deep Check] Work does not exist: ${workId} (from ${id})`);
+            invalidIds.push({id, label, reason: `Work ${workId} not found/deleted`});
+        }
+    }
+
+    // Create report
+    let report = `Deep Check Complete!\n\n`;
+    report += `✅ Valid works: ${validCount}\n`;
+    report += `❌ Invalid works: ${invalidIds.length}\n`;
+    report += `🔍 Total checked: ${checkedCount}\n\n`;
+
+    if (invalidIds.length > 0) {
+        report += `Invalid Work IDs:\n`;
+        invalidIds.forEach(item => {
+            report += `• ${item.id} (${item.label}) - ${item.reason}\n`;
+        });
+        report += `\nThese works may be deleted, private, or have invalid IDs.`;
+    } else {
+        report += `All your tagged works are valid! 🎉`;
+    }
+
+    console.log('[AO3 Deep Check] ' + report.replace(/\n/g, ' | '));
+    return {
+        checked: checkedCount,
+        valid: validCount,
+        invalid: invalidIds.length,
+        invalidList: invalidIds,
+        report: report
+    };
+}
+
+    // Add cleanup button to settings panel
+    function addCleanupToSettings() {
+        // This would be added to your createSettingsPanel function
+        const cleanupButton = `
+    <div style="margin:10px 0;">
+      <button id="cleanup-storage" style="padding:8px 16px;background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;">Clean Up Storage</button>
+      <button id="deep-cleanup-storage" style="padding:8px 16px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;margin-left:8px;">Deep Clean (Validate)</button>
+    </div>
+  `;
+
+        // Add event listeners
+        document
+            .querySelector("#cleanup-storage")
+            ?.addEventListener("click", () => {
+                const result = cleanupInvalidEntries();
+                alert(
+                    `Cleanup complete!\nRemoved: ${result.removedLabels} labels, ${result.removedNotes} notes, ${result.removedAuthorNotes} author notes\nKept: ${result.keptLabels} labels, ${result.keptNotes} notes, ${result.keptAuthorNotes} author notes`
+                );
+            });
+
+        document
+            .querySelector("#deep-cleanup-storage")
+            ?.addEventListener("click", async () => {
+                if (
+                    !confirm(
+                        "This will check each stored work against AO3 to see if it exists. This may take several minutes. Continue?"
+                    )
+                ) {
+                    return;
+                }
+
+                const result = await deepCleanupWithValidation();
+                alert(
+                    `Deep cleanup complete!\nValidated: ${result.validated} works\nRemoved: ${result.removed} invalid works`
+                );
+            });
+    }
+
+    // Console commands for immediate cleanup
+    console.log(`
+AO3 Storage Cleanup Commands:
+- Run cleanupInvalidEntries() to remove obviously invalid entries
+- Run deepCleanupWithValidation() to validate each work against AO3 (slow)
+- Run isValidWorkId('your_id_here') to test if an ID format is valid
+`);
+
+    // Export functions to global scope for console access
+    window.cleanupInvalidEntries = cleanupInvalidEntries;
+    window.deepCleanupWithValidation = deepCleanupWithValidation;
+    window.isValidWorkId = isValidWorkId;
+    window.isValidAuthorId = isValidAuthorId;
+
+    // UI helper functions
+    function makeButtonRow(c) {
+        c.style.display = "flex";
+        c.style.flexWrap = "wrap";
+        c.style.justifyContent = "flex-end";
+        c.style.gap = "2px";
+        c.style.width = "100%";
+        c.style.clear = "both";
+        c.style.marginTop = "0.5em";
+    }
+
+    function setLabelColor(el, tag) {
+        const c = TAG_COLORS[tag];
+        if (!c) return;
+        el.style.color = c.bg;
+        el.style.fontWeight = "bold";
+        el.style.marginRight = "0.35em";
+    }
+
+    function applyBorderHighlight(work, tag) {
+        work.style.border = "";
+        work.style.boxShadow = "";
+        work.style.borderRadius = "";
+        if (BORDER_TAGS.includes(tag)) {
+            const color = TAG_COLORS[tag]?.bg || "#000";
+            work.style.border = `2px solid ${color}`;
+            work.style.boxShadow = `0 0 8px 2px ${color}55`;
+            work.style.borderRadius = "6px";
+        }
+    }
+
+    function applyCollapse(work, collapse) {
+        const hide = work.querySelectorAll(
+            ".tags,.summary,.stats,.fandoms,blockquote,.series,.collections"
+        );
+        hide.forEach((el) => (el.style.display = collapse ? "none" : ""));
+        work.style.opacity = collapse ? "0.6" : "1.0";
+        work.dataset.collapsed = collapse ? "true" : "false";
+    }
+
+    function createNoteUI(id, isAuthor = false) {
+        const notes = isAuthor ? loadAuthorNotes() : loadNotes();
+        const data = notes[id];
+
+        const w = document.createElement("div");
+        w.className = "fic-note-wrapper";
+        w.style.cssText =
+            "margin:0px 0 8px 0;padding:0;border:none;background:transparent;text-align:center;width:70%;max-width:600px;min-width:300px;margin-left:auto;margin-right:auto;";
+
+        const showAdd = () => {
+            w.innerHTML = "";
+            w.style.cssText =
+                "margin:0px 0 8px 0;padding:0;border:none;background:transparent;text-align:center;width:70%;max-width:600px;min-width:300px;margin-left:auto;margin-right:auto;";
+            const b = document.createElement("button");
+            b.type = "button";
+            b.innerHTML = isAuthor ? "📝 Add Author Note" : "📝 Add Story Note";
+            b.style.cssText =
+                "border:1.5px dashed #999;background:transparent;cursor:pointer;display:inline-block;text-align:center;padding:4px;font-size:0.9em;border-radius:4px;";
+            b.addEventListener("click", (e) => {
+                e.stopPropagation();
+                showEdit("");
+            });
+            w.appendChild(b);
+        };
+
+        const showView = (obj) => {
+            w.innerHTML = "";
+            w.style.cssText =
+                "margin:0px 0 8px 0;padding:6px;border:1.5px solid #999;border-radius:4px;background:transparent;text-align:center;width:70%;max-width:600px;min-width:300px;margin-left:auto;margin-right:auto;";
+
+            const h = document.createElement("div");
+            h.style.cssText =
+                "display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;";
+
+            const l = document.createElement("div");
+            l.innerHTML = isAuthor
+                ? "<strong>📝 Your Author Note</strong>"
+                : "<strong>📝 Your Story Note</strong>";
+
+            const r = document.createElement("div");
+            r.style.cssText = "display:flex;gap:6px;";
+
+            const ts = document.createElement("span");
+            ts.textContent = obj.date;
+            ts.style.cssText =
+                "color:#777;font-size:0.85em;position:relative;top:6px;";
+
+            const ebtn = document.createElement("button");
+            ebtn.textContent = "✏️";
+            ebtn.style.cssText =
+                "background:transparent;border:none;cursor:pointer;";
+            ebtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                showEdit(obj.text);
+            });
+
+            const dbtn = document.createElement("button");
+            dbtn.textContent = "🗑️";
+            dbtn.style.cssText =
+                "background:transparent;border:none;cursor:pointer;";
+            dbtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const confirmDelete = confirm(
+                    isAuthor
+                        ? "Are you sure you want to delete this note?"
+                        : "Are you sure you want to delete this note?"
+                );
+                if (!confirmDelete) return;
+                const n = isAuthor ? loadAuthorNotes() : loadNotes();
+                delete n[id];
+                if (isAuthor) saveAuthorNotes(n);
+                else saveNotes(n);
+                showAdd();
+            });
+
+            r.append(ts, ebtn, dbtn);
+            h.append(l, r);
+            w.appendChild(h);
+
+            const c = document.createElement("div");
+            c.textContent = obj.text;
+            c.style.cssText =
+                "white-space:pre-wrap;width:100%;box-sizing:border-box;border-top:1px solid #ccc;padding-top:8px;margin-top:8px;";
+            w.appendChild(c);
+        };
+
+        const showEdit = (text) => {
+            w.innerHTML = "";
+            w.style.cssText =
+                "margin:0px 0 8px 0;padding:0;border:none;background:transparent;text-align:center;width:70%;max-width:600px;min-width:300px;margin-left:auto;margin-right:auto;";
+
+            const container = document.createElement("div");
+            container.style.cssText =
+                "display:flex;justify-content:center;width:100%;";
+
+            const ta = document.createElement("textarea");
+            ta.value = text || "";
+            ta.style.cssText =
+                "width:100%;max-width:100%;min-height:80px;border:1px solid #ccc;border-radius:6px;padding:6px;";
+            container.appendChild(ta);
+            w.appendChild(container);
+
+            const row = document.createElement("div");
+            row.style.cssText = "text-align:center;margin-top:8px;";
+
+            const save = document.createElement("button");
+            save.textContent = "💾 Save";
+            save.style.marginRight = "6px";
+            save.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const v = ta.value.trim();
+                if (!v) {
+                    showAdd();
+                    return;
+                }
+                const n = isAuthor ? loadAuthorNotes() : loadNotes();
+                n[id] = { text: v, date: formatDateTime(new Date()) };
+                if (isAuthor) saveAuthorNotes(n);
+                else saveNotes(n);
+                showView(n[id]);
+            });
+
+            const cancel = document.createElement("button");
+            cancel.textContent = "❌ Cancel";
+            cancel.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const n = isAuthor ? loadAuthorNotes() : loadNotes();
+                if (n[id]) showView(n[id]);
+                else showAdd();
+            });
+
+            row.append(save, cancel);
+            w.appendChild(row);
+        };
+
+        if (data) showView(data);
+        else showAdd();
+        return w;
+    }
+
+    function isValidWorkId(id) {
+        // Check if it's a valid work/bookmark ID format
+        if (!id || typeof id !== "string") return false;
+
+        // Handle bookmark IDs
+        if (id.startsWith("bookmark_")) {
+            const workId = id
+                .replace("bookmark_", "")
+                .replace(/^.*?(\d+).*$/, "$1");
+            return (
+                /^\d+$/.test(workId) && workId.length >= 1 && workId.length <= 8
+            );
+        }
+
+        // Handle direct work IDs
+        if (/^\d+$/.test(id)) {
+            return id.length >= 1 && id.length <= 8;
+        }
+
+        // Handle other formats that might contain work IDs
+        const workIdMatch = id.match(/\d+/);
+        if (workIdMatch) {
+            const workId = workIdMatch[0];
+            return workId.length >= 1 && workId.length <= 8;
+        }
+
+        return false;
+    }
+
+    function createTagButton(
+        tag,
+        id,
+        c,
+        work,
+        h,
+        ref,
+        showLabel,
+        isSearchResult = true
+    ) {
+        const b = document.createElement("button");
+        b.className = "fic-tag-btn";
+        b.dataset.tag = tag;
+        b.textContent = tag;
+        b.style.cssText =
+            "font-size:0.8em;padding:2px 6px;border:1px solid #ccc;border-radius:4px;margin:1px;";
+
+        // Replace the tag button click handler around line 940 with this fixed version:
+
+        b.addEventListener("click", (e) => {
+    e.stopPropagation();
+
+    if (!id) {
+        console.error('[AO3] Missing ID:', id);
+        return;
+    }
+
+    const labels = loadLabels();
+    const tagDates = loadTagDates(); // Load tag dates
+    let cur = labels[id] || "";
+
+    if (cur === tag) {
+        console.log(`[AO3] Removing tag "${tag}" from work ID "${id}"`);
+        delete labels[id];
+        delete tagDates[id]; // Remove tag date when removing tag
+
+        // Track this deletion permanently
+        const deletedLabels = loadDeletedLabels();
+        deletedLabels[id] = {
+            tag: tag,
+            deletedAt: Date.now(),
+            originalId: id,
+        };
+        saveDeletedLabels(deletedLabels);
+
+        cur = "";
+        if (ref.span) {
+            ref.span.remove();
+            ref.span = null;
+        }
+    } else {
+        console.log(`[AO3] Saving tag "${tag}" for work ID "${id}"`);
+
+        // When adding a new tag, remove it from deleted list if it was there
+        const deletedLabels = loadDeletedLabels();
+        if (deletedLabels[id]) {
+            delete deletedLabels[id];
+            saveDeletedLabels(deletedLabels);
+        }
+
+        labels[id] = tag;
+        tagDates[id] = Date.now(); // TRACK WHEN TAG WAS ADDED
+        cur = tag;
+
+        if (showLabel) {
+            if (!ref.span) {
+                const s = document.createElement("span");
+                s.className = "fic-label";
+                h.insertBefore(s, h.firstChild);
+                ref.span = s;
+            }
+            ref.span.textContent = `[${cur}]`;
+            setLabelColor(ref.span, cur);
+        }
+    }
+
+    saveLabels(labels);
+    saveTagDates(tagDates); // SAVE TAG DATES
+    updateButtons(c, cur);
+
+    if (isSearchResult) {
+        applyCollapse(work, COLLAPSE_TAGS.includes(cur));
+        applyBorderHighlight(work, cur);
+    }
+});
+
+        return b;
+    }
+
+    function updateButtons(c, cur) {
+        c.querySelectorAll("button.fic-tag-btn").forEach((b) => {
+            const tag = b.dataset.tag;
+            const colors = TAG_COLORS[tag] || { bg: "#eee", text: "#000" };
+            if (tag === cur) {
+                b.style.background = colors.bg;
+                b.style.color = colors.text;
+                b.style.borderColor = colors.bg;
+            } else {
+                b.style.background = "#eee";
+                b.style.color = "#000";
+                b.style.borderColor = "#ccc";
+            }
+        });
+    }
+
+    function setupWork(work) {
+        if (work.dataset.proc) return;
+        work.dataset.proc = "1";
+
+        let id;
+        console.log(`[AO3 Debug] Processing work element:`, work.id, work);
+
+        if (work.id.includes("bookmark")) {
+            const workLink = work.querySelector('a[href*="/works/"]');
+            if (workLink) {
+                console.log(`[AO3 Debug] Found work link:`, workLink.href);
+                const match = workLink.href.match(/works\/(\d+)/);
+                id = match ? match[1] : null;
+                console.log(`[AO3 Debug] Extracted ID from bookmark:`, id);
+            } else {
+                console.log(`[AO3 Debug] No work link found in bookmark`);
+            }
+        } else {
+            const match = work.id.match(/work_(\d+)/);
+            id = match ? match[1] : null;
+            console.log(`[AO3 Debug] Extracted ID from work element:`, id);
+        }
+
+        if (!id || !isValidWorkId(id)) {
+            console.warn(
+                `[AO3] Invalid or missing work ID for element:`,
+                work.id,
+                "extracted ID:",
+                id
+            );
+            return;
+        }
+
+        console.log(`[AO3 Debug] Successfully processing work ID:`, id);
+
+        const labels = loadLabels();
+        const cur = labels[id] || "";
+        const heading = work.querySelector("h4.heading");
+        if (!heading) return;
+
+        const ref = { span: null };
+        if (cur) {
+            const s = document.createElement("span");
+            s.className = "fic-label";
+            s.textContent = `[${cur}]`;
+            setLabelColor(s, cur);
+            heading.insertBefore(s, heading.firstChild);
+            ref.span = s;
+        }
+
+        const note = createNoteUI(id);
+        const tags = work.querySelector(".tags");
+        if (tags) tags.parentNode.insertBefore(note, tags);
+        else heading.parentNode.insertBefore(note, heading.nextSibling);
+
+        let c = work.querySelector(":scope > .fic-label-buttons");
+        if (!c) {
+            c = document.createElement("div");
+            c.className = "fic-label-buttons";
+            makeButtonRow(c);
+            PRESET_TAGS.forEach((t) =>
+                c.appendChild(
+                    createTagButton(t, id, c, work, heading, ref, true, true)
+                )
+            );
+            work.appendChild(c);
+        }
+
+        updateButtons(c, cur);
+        applyCollapse(work, COLLAPSE_TAGS.includes(cur));
+        applyBorderHighlight(work, cur);
+
+        if (!work._bound) {
+            work.addEventListener("click", (e) => {
+                if (e.target.closest("a,button,.fic-note-wrapper")) return;
+                const l = loadLabels()[id] || "";
+                if (!COLLAPSE_TAGS.includes(l)) return;
+                applyCollapse(work, work.dataset.collapsed !== "true");
+            });
+            work._bound = 1;
+        }
+    }
+
+    function setupWorkPage() {
+        if (document.querySelector(".ao3-personal-tools")) return;
+
+        const idMatch = location.pathname.match(/works\/(\d+)/);
+        if (!idMatch) return;
+        const workId = idMatch[1];
+
+        const labels = loadLabels();
+        const currentLabel = labels[workId] || "";
+
+        const workMeta = document.querySelector(".work.meta.group");
+        if (!workMeta) return;
+
+        const toolsWrapper = document.createElement("div");
+        toolsWrapper.className = "ao3-personal-tools";
+        toolsWrapper.style.cssText = "margin:1em 0;padding:1em;";
+
+        const sectionTitle = document.createElement("h3");
+        sectionTitle.style.cssText =
+            "margin:0 0 0.5em 0;font-size:1.1em;font-weight:bold;";
+        toolsWrapper.appendChild(sectionTitle);
+
+        const notesWrapper = createNoteUI(workId);
+        toolsWrapper.appendChild(notesWrapper);
+
+        const buttonContainer = document.createElement("div");
+        buttonContainer.className = "fic-label-buttons work-page-buttons";
+        buttonContainer.style.marginTop = "0.5em";
+        makeButtonRow(buttonContainer);
+
+        PRESET_TAGS.forEach((tag) => {
+            const btn = createTagButton(
+                tag,
+                workId,
+                buttonContainer,
+                document.body,
+                workMeta,
+                { span: null },
+                false,
+                false
+            );
+            buttonContainer.appendChild(btn);
+        });
+
+        toolsWrapper.appendChild(buttonContainer);
+        updateButtons(buttonContainer, currentLabel);
+
+        workMeta.parentNode.insertBefore(toolsWrapper, workMeta.nextSibling);
+    }
+
+    function isWorkPage() {
+        const workPagePatterns = [
+            /\/works\/.*(?:chapters|view_full_work)/,
+            /works\/\d+(#\w+-?\w*)?$/,
+        ];
+        return workPagePatterns.some((pattern) =>
+            pattern.test(window.location.href)
+        );
+    }
+
+    function isAuthorPage() {
+        return /\/users\/[^\/]+(?:\/pseuds\/[^\/]+)?$/.test(
+            window.location.pathname
+        );
+    }
+
+    function setupAuthorPage() {
+        if (document.querySelector(".author-note-wrapper")) return;
+
+        let authorId;
+
+        const pseudMatch = window.location.pathname.match(
+            /\/users\/([^\/]+)\/pseuds\/([^\/]+)$/
+        );
+        const userMatch = window.location.pathname.match(/\/users\/([^\/]+)$/);
+
+        if (pseudMatch) {
+            authorId = `${pseudMatch[1]}_${pseudMatch[2]}`;
+        } else if (userMatch) {
+            authorId = `${userMatch[1]}`;
+        } else {
+            return;
+        }
+
+        console.log(`Setting up author page with ID: ${authorId}`);
+
+        const possibleTargets = [
+            ".user.home.profile",
+            ".profile",
+            ".user.dashboard.own",
+            ".user.dashboard",
+            "#main .user",
+            "#main",
+        ];
+
+        let target = null;
+        for (const selector of possibleTargets) {
+            target = document.querySelector(selector);
+            if (target) {
+                console.log(`Found target with selector: ${selector}`);
+                break;
+            }
+        }
+
+        if (!target) {
+            console.log("No suitable target found for author note");
+            return;
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("author-note-wrapper");
+        wrapper.style.cssText = "margin: 1em 0; padding: 0;";
+
+        const noteUI = createNoteUI(authorId, true);
+        wrapper.appendChild(noteUI);
+
+        if (target.firstChild) {
+            target.insertBefore(wrapper, target.firstChild);
+        } else {
+            target.appendChild(wrapper);
+        }
+
+        console.log("Author note UI added successfully");
+    }
+
+    function init() {
+        addSettingsButton();
+
+        if (isWorkPage()) {
+            setupWorkPage();
+        } else if (isAuthorPage()) {
+            setupAuthorPage();
+        } else {
+            document
+                .querySelectorAll("li.work, li.bookmark")
+                .forEach(setupWork);
+        }
+
+        const mo = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType !== 1) return;
+
+                    // Only process if it's actually work-related content
+                    if (
+                        node.classList?.contains("work") ||
+                        node.classList?.contains("bookmark") ||
+                        (node.tagName === "LI" &&
+                            (node.id.includes("work_") ||
+                                node.id.includes("bookmark_")))
+                    ) {
+                        setupWork(node);
+                    }
+
+                    // Check for work containers being added
+                    else if (node.querySelector) {
+                        const works = node.querySelectorAll(
+                            "li.work, li.bookmark"
+                        );
+                        if (works.length > 0) {
+                            works.forEach(setupWork);
+                        }
+
+                        // Handle page-specific setup only for relevant containers
+                        if (
+                            isWorkPage() &&
+                            (node.classList?.contains("work") ||
+                                node.id === "main")
+                        ) {
+                            setupWorkPage();
+                        }
+                        if (
+                            isAuthorPage() &&
+                            (node.classList?.contains("profile") ||
+                                node.id === "main")
+                        ) {
+                            setupAuthorPage();
+                        }
+                    }
+                });
+            });
+        });
+
+        mo.observe(document.querySelector("#main") || document.body, {
+            childList: true,
+            subtree: true,
+        });
+    }
+    init();
+})();
+
