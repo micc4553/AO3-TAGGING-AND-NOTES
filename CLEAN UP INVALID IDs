@@ -1,0 +1,15 @@
+(function() {
+    const labels = JSON.parse(localStorage.getItem("ao3_fic_labels") || "{}");
+    const validLabels = {};
+    let removed = 0;
+    Object.entries(labels).forEach(([id, label]) => {
+        if (id.length <= 8 && /^\d+$/.test(id) && !id.includes('null')) {
+            validLabels[id] = label;
+        } else {
+            console.log("Removing:", id);
+            removed++;
+        }
+    });
+    localStorage.setItem("ao3_fic_labels", JSON.stringify(validLabels));
+    console.log(`Removed ${removed} invalid IDs`);
+})();
