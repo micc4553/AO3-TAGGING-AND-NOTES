@@ -137,13 +137,14 @@ async processDownloadQueue() {
             document.getElementById('current-download').textContent = `Downloading: ${ficId}`;
 
            try {
-await this.addFicToDownloads(ficId);
-             this.downloadedCount++;
-    console.log(`Successfully downloaded ${ficId}`);
-console.error(`Failed to download ${ficId}:`, error);
-    this.failedDownloads.push({ id: ficId, error: error.message });
-    this.downloadedCount++; // MOVE THIS HERE - still count failed downloads for progress
-}
+               await this.addFicToDownloads(ficId);
+               this.downloadedCount++;
+               console.log(`Successfully downloaded ${ficId}`);
+           } catch (error) {
+               console.error(`Failed to download ${ficId}:`, error);
+               this.failedDownloads.push({ id: ficId, error: error.message });
+               this.downloadedCount++; // still count failed downloads for progress
+           }
 
             const percentage = (this.downloadedCount / this.totalCount) * 100;
             document.getElementById('download-progress').style.width = `${percentage}%`;
