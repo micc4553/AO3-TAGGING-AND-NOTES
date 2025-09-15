@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AO3 Tagging and Notes
-// @version      6.3.3
+// @version      5.4.3
 // @description  Tag AO3 works with Google sync for cross-device data
 // @match        https://archiveofourown.org/*
 // @icon         https://archiveofourown.org/favicon.ico
@@ -1431,9 +1431,9 @@ content.innerHTML = `
   </div>
   <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
     <span style="color:#ccc;font-size:0.9em;">Sort by:</span>
-<button id="sort-date-tagged" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Recently Tagged</button>
+<button id="sort-date-updated" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Update Date</button>
+    <button id="sort-date-tagged" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Tag Date</button>
 <button id="sort-title" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Title A-Z</button>
-<button id="sort-date-updated" style="background:#555;color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.85em;">Date Added</button>
   </div>
 </div>
 <div id="works-list">${worksList.join("")}</div>
