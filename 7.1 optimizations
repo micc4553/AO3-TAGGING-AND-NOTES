@@ -2843,71 +2843,7 @@ function isValidWorkId(id) {
         console.log("Author note UI added successfully");
     }
 
-    function init() {
-        addSettingsButton();
-
-        if (isWorkPage()) {
-            setupWorkPage();
-        } else if (isAuthorPage()) {
-            setupAuthorPage();
-        } else {
-            document
-                .querySelectorAll("li.work, li.bookmark")
-                .forEach(setupWork);
-        }
-
-        const mo = new MutationObserver((mutations) => {
-            mutations.forEach((mutation) => {
-                mutation.addedNodes.forEach((node) => {
-                    if (node.nodeType !== 1) return;
-
-                    // Only process if it's actually work-related content
-                    if (
-                        node.classList?.contains("work") ||
-                        node.classList?.contains("bookmark") ||
-                        (node.tagName === "LI" &&
-                            (node.id.includes("work_") ||
-                                node.id.includes("bookmark_")))
-                    ) {
-                        setupWork(node);
-                    }
-
-                    // Check for work containers being added
-                    else if (node.querySelector) {
-                        const works = node.querySelectorAll(
-                            "li.work, li.bookmark"
-                        );
-                        if (works.length > 0) {
-                            works.forEach(setupWork);
-                        }
-
-                        // Handle page-specific setup only for relevant containers
-                        if (
-                            isWorkPage() &&
-                            (node.classList?.contains("work") ||
-                                node.id === "main")
-                        ) {
-                            setupWorkPage();
-                        }
-                        if (
-                            isAuthorPage() &&
-                            (node.classList?.contains("profile") ||
-                                node.id === "main")
-                        ) {
-                            setupAuthorPage();
-                        }
-                    }
-                });
-            });
-        });
-
-        mo.observe(document.querySelector("#main") || document.body, {
-            childList: true,
-            subtree: true,
-        });
-    }
-    init();
-// Run the script
+   
     setTimeout(() => {
         initializeMissingTagDates(); // ADD THIS LINE HERE
         addSettingsButton();
