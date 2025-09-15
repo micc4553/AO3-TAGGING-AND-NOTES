@@ -1,0 +1,17 @@
+// REPLACE EXAMPLE NOTES WITH REAL FROM JSON FILE
+const ao3Data = {
+  ao3_fic_labels: "{\"42059\":\"Disliked\",\"967095\":\"To Read\"}",
+  
+  ao3_fic_notes: "{\"70628481\":{\"text\":\"de-age fic but subpar writing\",\"date\":\"Sep 11, 2025, 04:14 a.m.\"}}",
+
+  ao3_author_notes: "{\"zeitgeistic\":{\"text\":\"azoth writer\",\"date\":\"2025-09-04T16:39:24.189Z\"}}"
+
+};
+
+// Store each key in localStorage
+for (const key in ao3Data) {
+  localStorage.setItem(key, ao3Data[key]);
+}
+
+// Confirm
+console.log("Data saved to localStorage:", Object.keys(ao3Data));
