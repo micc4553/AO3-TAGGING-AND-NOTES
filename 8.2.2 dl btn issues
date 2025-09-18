@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AO3 Tagging and Notes
-// @version      8.1.5
+// @version      8.2.2
 // @description  Tag AO3 works with Google sync for cross-device data
 // @match        https://archiveofourown.org/*
 // @icon         https://archiveofourown.org/favicon.ico
@@ -1798,9 +1798,8 @@ selectNew() {
                     <div style="display:flex;align-items:center;gap:10px;">
                         <span style="font-size:0.9em;">${count} work${count === 1 ? "" : "s"}</span>
                         ${(tag === 'Favourite' || tag === 'Dish') ? `
-                            <button class="download-tag-btn" data-tag="${tag}"
-                                    style="background:${color.bg};color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.8em;"
-                                    onclick="event.stopPropagation();">📚 Download</button>
+<button class="download-tag-btn" data-tag="${tag}"
+        style="background:${color.bg};color:white;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:0.8em;">📚 Download</button>
                         ` : ''}
                     </div>
                 </div>
