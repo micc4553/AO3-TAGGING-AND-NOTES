@@ -2062,7 +2062,6 @@ function processStoryPage() {
             btn.style.background = TAG_COLORS[tag].bg;
             btn.style.color = TAG_COLORS[tag].text;
             btn.style.border = `1px solid ${TAG_COLORS[tag].bg}`;
-            btn.style.fontWeight = 'bold';
         }
 
 btn.addEventListener('mouseenter', () => {
@@ -2080,27 +2079,39 @@ btn.addEventListener('mouseleave', () => {
         btn.style.background = '#eee';
     }
 });
-        // FIXED CLICK HANDLER - with immediate UI update
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
 
-            // Get current labels state
-            const currentLabels = Storage.loadLabels();
-            const wasTagged = currentLabels[workId] === tag;
+    // Immediate visual feedback before any storage operations
+    const currentLabels = Storage.loadLabels();
+    const wasTagged = currentLabels[workId] === tag;
 
-            // Toggle the tag
-            toggleWorkTag(workId, tag);
+    if (wasTagged) {
+        // If removing tag, reset to default immediately
+        btn.style.background = '#eee';
+        btn.style.color = '#333';
+        btn.style.border = '1px solid #ccc';
+        btn.style.fontWeight = 'normal';
+    } else {
+        // If adding tag, apply tag colors immediately
+        btn.style.background = TAG_COLORS[tag].bg;
+        btn.style.color = TAG_COLORS[tag].text;
+        btn.style.border = `1px solid ${TAG_COLORS[tag].bg}`;
+    }
 
-            // Get new state after toggle
-            const newLabels = Storage.loadLabels();
-            const newCurrentTag = newLabels[workId];
+    // Now do the actual storage operations
+    toggleWorkTag(workId, tag);
 
-            console.log(`Tag toggle: ${tag}, was tagged: ${wasTagged}, new tag: ${newCurrentTag}`);
+    // Get new state after toggle
+    const newLabels = Storage.loadLabels();
+    const newCurrentTag = newLabels[workId];
 
-            // Update UI immediately without full page refresh
-            updateStoryPageTagging(workId, newCurrentTag);
-        });
+    console.log(`Tag toggle: ${tag}, was tagged: ${wasTagged}, new tag: ${newCurrentTag}`);
+
+    // Update UI for all buttons (this will correct any mistakes from immediate feedback)
+    updateStoryPageTagging(workId, newCurrentTag);
+});
 
         buttonContainer.appendChild(btn);
     });
@@ -2154,7 +2165,6 @@ function updateStoryPageTagging(workId, currentTag) {
             btn.style.background = TAG_COLORS[btnTag].bg;
             btn.style.color = TAG_COLORS[btnTag].text;
             btn.style.border = `1px solid ${TAG_COLORS[btnTag].bg}`;
-            btn.style.fontWeight = 'bold';
         } else {
             // Reset inactive buttons
             btn.style.background = '#eee';
