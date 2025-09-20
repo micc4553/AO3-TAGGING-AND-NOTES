@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         AO3 Tagging and Notes
-// @version      8.2.5
+// @version      8.2.7
 // @description  Tag AO3 works with Google sync for cross-device data
 // @match        https://archiveofourown.org/*
 // @icon         https://archiveofourown.org/favicon.ico
@@ -380,7 +380,7 @@ if (target.matches(".download-tag-btn") || target.closest(".download-tag-btn")) 
         }
 
 async handleRefreshFic(button) {
-    const workId = e.target.getAttribute('data-work-id');
+    const workId = button.dataset.workId;
 
     button.innerHTML = "✅";
     button.disabled = true;
@@ -1921,19 +1921,19 @@ wrapper.saveNote = function() {
     }
 
 function processStoryPage() {
-    var workMatch = window.location.pathname.match(/\/works\/(\d+)/);
+    const workMatch = window.location.pathname.match(/\/works\/(\d+)/);
     if (!workMatch) return;
 
-    var workId = workMatch[1];
+    const workId = workMatch[1];
     console.log('Processing story page for work:', workId);
 
     // Check if we already processed this page
     if (document.querySelector('.ao3-story-tagging')) return;
 
     // Find where to insert the tagging UI
-    var workMeta = document.querySelector('#workskin .preface') ||
-                   document.querySelector('.work.meta.group') ||
-                   document.querySelector('#main .wrapper');
+    const workMeta = document.querySelector('#workskin .preface') ||
+                    document.querySelector('.work.meta.group') ||
+                    document.querySelector('#main .wrapper');
 
     if (!workMeta) {
         console.log('Could not find insertion point for story page tagging');
@@ -1941,151 +1941,137 @@ function processStoryPage() {
     }
 
     // Load current tag status FIRST
-    var labels = Storage.loadLabels();
-    var currentTag = labels[workId];
+    const labels = Storage.loadLabels();
+    const currentTag = labels[workId];
 
     // Create the tagging container
-    var tagContainer = document.createElement('div');
+    const tagContainer = document.createElement('div');
     tagContainer.className = 'ao3-story-tagging';
-    tagContainer.style.cssText = 'margin: 20px 0;';
+    tagContainer.style.cssText = `margin: 20px 0;`;
 
-    // Add current tag display if exists
+    // Add current tag display if exists - THIS WAS MISSING PROPER REFRESH
     if (currentTag) {
-        var tagDisplay = document.createElement('div');
-        tagDisplay.id = 'current-tag-display';
-        tagDisplay.style.cssText = 'text-align: center; margin-bottom: 10px; font-weight: bold; color: ' + TAG_COLORS[currentTag].bg + ';';
-        tagDisplay.textContent = 'Currently tagged: ' + currentTag;
+        const tagDisplay = document.createElement('div');
+        tagDisplay.id = 'current-tag-display'; // Add ID for easy updates
+        tagDisplay.style.cssText = `
+            text-align: center; margin-bottom: 10px; font-weight: bold;
+            color: ${TAG_COLORS[currentTag].bg};
+        `;
+        tagDisplay.textContent = `Currently tagged: ${currentTag}`;
         tagContainer.appendChild(tagDisplay);
     }
 
     // Add tag buttons
-    var buttonContainer = document.createElement('div');
-    buttonContainer.style.cssText = 'display: flex; display: -webkit-flex; flex-wrap: wrap; -webkit-flex-wrap: wrap; gap: 6px; margin-bottom: 15px; justify-content: center; -webkit-justify-content: center;';
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.cssText = `
+        display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 15px; justify-content: center;
+    `;
 
-    for (var i = 0; i < PRESET_TAGS.length; i++) {
-        var tag = PRESET_TAGS[i];
-        var btn = document.createElement('button');
+    PRESET_TAGS.forEach(tag => {
+        const btn = document.createElement('button');
         btn.textContent = tag;
         btn.className = 'ao3-tag-btn';
-        btn.setAttribute('data-work-id', workId); // Compatible with old browsers
-        btn.style.cssText = 'padding: 1px 6px; margin: 2px; border: 1px solid #ccc; border-radius: 4px; background: #eee; color: #333; font-size: 0.9em; cursor: pointer; transition: all 0.2s;';
+        btn.dataset.workId = workId;
+        btn.style.cssText = `
+            padding: 1px 6px; margin: 2px; border: 1px solid #ccc; border-radius: 4px;
+            background: #eee; color: #333; font-size: 0.9em; cursor: pointer; transition: all 0.2s;
+        `;
 
         // Apply current tag styling IMMEDIATELY
         if (currentTag === tag) {
             btn.style.background = TAG_COLORS[tag].bg;
             btn.style.color = TAG_COLORS[tag].text;
-            btn.style.border = '1px solid ' + TAG_COLORS[tag].bg;
+            btn.style.border = `1px solid ${TAG_COLORS[tag].bg}`;
             btn.style.fontWeight = 'bold';
         }
 
-        // Add hover effects - using function declarations for IE compatibility
-        btn.addEventListener('mouseenter', function(e) {
-            var btnTag = e.target.textContent;
-            var currentLabels = Storage.loadLabels();
-            var current = currentLabels[workId];
-            if (current !== btnTag) {
-                e.target.style.background = '#f0f0f0';
+        // Add hover effects
+        btn.addEventListener('mouseenter', () => {
+            if (currentTag !== tag) {
+                btn.style.background = '#f0f0f0';
             }
         });
 
-        btn.addEventListener('mouseleave', function(e) {
-            var btnTag = e.target.textContent;
-            var currentLabels = Storage.loadLabels();
-            var current = currentLabels[workId];
-            if (current !== btnTag) {
-                e.target.style.background = '#eee';
+        btn.addEventListener('mouseleave', () => {
+            if (currentTag !== tag) {
+                btn.style.background = '#eee';
             }
         });
 
-        // FIXED CLICK HANDLER - browser compatible
-        btn.addEventListener('click', function(e) {
+        // FIXED CLICK HANDLER - with immediate UI update
+        btn.addEventListener('click', (e) => {
             e.preventDefault();
-            if (e.stopPropagation) {
-                e.stopPropagation();
-            }
-
-            // Get data using getAttribute for old browser compatibility
-            var clickedWorkId = e.target.getAttribute('data-work-id');
-            var clickedTag = e.target.textContent;
-
-            console.log('Button clicked:', clickedTag, 'for work:', clickedWorkId);
+            e.stopPropagation();
 
             // Get current labels state
-            var currentLabels = Storage.loadLabels();
-            var wasTagged = currentLabels[clickedWorkId] === clickedTag;
+            const currentLabels = Storage.loadLabels();
+            const wasTagged = currentLabels[workId] === tag;
 
             // Toggle the tag
-            var newCurrentTag = toggleWorkTag(clickedWorkId, clickedTag);
+            toggleWorkTag(workId, tag);
 
-            console.log('Tag toggle result:', newCurrentTag);
+            // Get new state after toggle
+            const newLabels = Storage.loadLabels();
+            const newCurrentTag = newLabels[workId];
 
-            // Update UI immediately with small delay for older browsers
-            setTimeout(function() {
-                updateStoryPageTagging(clickedWorkId, newCurrentTag);
-            }, 50);
+            console.log(`Tag toggle: ${tag}, was tagged: ${wasTagged}, new tag: ${newCurrentTag}`);
+
+            // Update UI immediately without full page refresh
+            updateStoryPageTagging(workId, newCurrentTag);
         });
 
         buttonContainer.appendChild(btn);
-    }
+    });
 
     tagContainer.appendChild(buttonContainer);
 
     // Add note UI
-    var noteUI = createNoteUI(workId, false);
+    const noteUI = createNoteUI(workId, false);
     tagContainer.appendChild(noteUI);
 
     // Insert before work meta information
     workMeta.parentNode.insertBefore(tagContainer, workMeta);
 }
 
-// Browser-compatible helper function
+// NEW HELPER FUNCTION for immediate UI updates
 function updateStoryPageTagging(workId, currentTag) {
-    console.log('Updating story page tagging:', workId, currentTag);
-
-    var tagDisplay = document.getElementById('current-tag-display');
-    var buttons = document.querySelectorAll('.ao3-tag-btn');
-
-    // Filter buttons for this work (since querySelectorAll doesn't support attribute selectors well in old browsers)
-    var workButtons = [];
-    for (var i = 0; i < buttons.length; i++) {
-        if (buttons[i].getAttribute('data-work-id') === workId) {
-            workButtons.push(buttons[i]);
-        }
-    }
+    const tagDisplay = document.getElementById('current-tag-display');
+    const buttons = document.querySelectorAll('.ao3-tag-btn[data-work-id="' + workId + '"]');
 
     // Update tag display
     if (currentTag) {
         if (tagDisplay) {
-            tagDisplay.textContent = 'Currently tagged: ' + currentTag;
+            tagDisplay.textContent = `Currently tagged: ${currentTag}`;
             tagDisplay.style.color = TAG_COLORS[currentTag].bg;
         } else {
             // Create new display if it didn't exist
-            var container = document.querySelector('.ao3-story-tagging');
-            var buttonContainer = container.querySelector('div');
+            const container = document.querySelector('.ao3-story-tagging');
+            const buttonContainer = container.querySelector('div[style*="display: flex"]');
 
-            var newDisplay = document.createElement('div');
+            const newDisplay = document.createElement('div');
             newDisplay.id = 'current-tag-display';
-            newDisplay.style.cssText = 'text-align: center; margin-bottom: 10px; font-weight: bold; color: ' + TAG_COLORS[currentTag].bg + ';';
-            newDisplay.textContent = 'Currently tagged: ' + currentTag;
+            newDisplay.style.cssText = `
+                text-align: center; margin-bottom: 10px; font-weight: bold;
+                color: ${TAG_COLORS[currentTag].bg};
+            `;
+            newDisplay.textContent = `Currently tagged: ${currentTag}`;
             container.insertBefore(newDisplay, buttonContainer);
         }
     } else {
         // Remove display if no tag
-        if (tagDisplay && tagDisplay.parentNode) {
-            tagDisplay.parentNode.removeChild(tagDisplay);
+        if (tagDisplay) {
+            tagDisplay.remove();
         }
     }
 
-    // Update all buttons for this work
-    for (var i = 0; i < workButtons.length; i++) {
-        var btn = workButtons[i];
-        var btnTag = btn.textContent;
-
+    // Update all buttons
+    buttons.forEach(btn => {
+        const btnTag = btn.textContent;
         if (currentTag === btnTag) {
             // This button is now active
             btn.style.background = TAG_COLORS[btnTag].bg;
             btn.style.color = TAG_COLORS[btnTag].text;
-            btn.style.border = '1px solid ' + TAG_COLORS[btnTag].bg;
+            btn.style.border = `1px solid ${TAG_COLORS[btnTag].bg}`;
             btn.style.fontWeight = 'bold';
         } else {
             // Reset inactive buttons
@@ -2094,39 +2080,7 @@ function updateStoryPageTagging(workId, currentTag) {
             btn.style.border = '1px solid #ccc';
             btn.style.fontWeight = 'normal';
         }
-    }
-}
-
-// Browser-compatible toggleWorkTag function
-function toggleWorkTag(workId, tag) {
-    console.log('toggleWorkTag called: workId=' + workId + ', tag=' + tag);
-
-    var labels = Storage.loadLabels();
-    var currentTag = labels[workId];
-
-    console.log('Current tag before toggle: ' + currentTag);
-
-    if (currentTag === tag) {
-        // Remove tag if clicking the same tag
-        delete labels[workId];
-        console.log('Removed tag ' + tag + ' from work ' + workId);
-        currentTag = null;
-    } else {
-        // Set new tag (or replace existing different tag)
-        labels[workId] = tag;
-        console.log('Set tag ' + tag + ' for work ' + workId);
-        currentTag = tag;
-    }
-
-    // Save immediately
-    Storage.saveLabels(labels);
-
-    // Verify save worked
-    var savedLabels = Storage.loadLabels();
-    var newTag = savedLabels[workId] || null;
-    console.log('Tag after save: ' + newTag);
-
-    return newTag; // Return the new tag state for use by caller
+    });
 }
 
     function processAuthorPage() {
